@@ -126,8 +126,19 @@ static bool hasNullComparisonInValueFlow(
       if (auto *SI = dyn_cast<StoreInst>(U)) {
         if (SI->getValueOperand() != V)
           continue;
-        if (const AllocaInst *Slot = asTrackedStackSlot(SI->getPointerOperand()))
+        const Value *Ptr = SI->getPointerOperand()->stripPointerCasts();
+        if (const AllocaInst *Slot = asTrackedStackSlot(Ptr))
           Worklist.push_back(Slot);
+        else {
+          for (const User *MemU : Ptr->users()) {
+            auto *LI = dyn_cast<LoadInst>(MemU);
+            if (!LI)
+              continue;
+            if (LI->getPointerOperand()->stripPointerCasts() != Ptr)
+              continue;
+            Worklist.push_back(LI);
+          }
+        }
         continue;
       }
 

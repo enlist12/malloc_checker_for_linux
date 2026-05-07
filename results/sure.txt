@@ -1,2 +1,0 @@
-cifs_strndup_from_utf16
-create_osd

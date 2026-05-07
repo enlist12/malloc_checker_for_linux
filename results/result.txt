@@ -1,102 +1,54 @@
-malloc-checker reports: 43
+malloc-checker reports: 37
 
 [1] unchecked allocation use
-  alloc-kind: devm_kmalloc
-  alloc-func: power_supply_get_battery_info
-  alloc-loc:  ./include/linux/device/devres.h:59
-  sink-func:  power_supply_get_battery_info
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_cmd_transfer_to_host_2d
   sink-kind:  store
-  sink-loc:   drivers/power/supply/power_supply_core.c:784
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:100
 
 [2] unchecked allocation use
-  alloc-kind: devm_kmalloc
-  alloc-func: power_supply_get_battery_info
-  alloc-loc:  ./include/linux/device/devres.h:59
-  sink-func:  power_supply_get_battery_info
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_resource_flush
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_cmd_resource_flush
   sink-kind:  store
-  sink-loc:   drivers/power/supply/power_supply_core.c:784
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:100
 
 [3] unchecked allocation use
-  alloc-kind: devm_kmalloc
-  alloc-func: power_supply_get_battery_info
-  alloc-loc:  ./include/linux/device/devres.h:59
-  sink-func:  power_supply_get_battery_info
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_cmd_transfer_to_host_2d
   sink-kind:  store
-  sink-loc:   drivers/power/supply/power_supply_core.c:784
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:101
 
 [4] unchecked allocation use
-  alloc-kind: devm_kmalloc
-  alloc-func: power_supply_get_battery_info
-  alloc-loc:  ./include/linux/device/devres.h:59
-  sink-func:  power_supply_get_battery_info
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_resource_flush
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_cmd_resource_flush
   sink-kind:  store
-  sink-loc:   drivers/power/supply/power_supply_core.c:785
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:101
 
 [5] unchecked allocation use
-  alloc-kind: devm_kmalloc
-  alloc-func: power_supply_get_battery_info
-  alloc-loc:  ./include/linux/device/devres.h:59
-  sink-func:  power_supply_get_battery_info
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_cmd_transfer_to_host_2d
   sink-kind:  store
-  sink-loc:   drivers/power/supply/power_supply_core.c:785
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:102
 
 [6] unchecked allocation use
-  alloc-kind: devm_kmalloc
-  alloc-func: power_supply_get_battery_info
-  alloc-loc:  ./include/linux/device/devres.h:59
-  sink-func:  power_supply_get_battery_info
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_resource_flush
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_cmd_resource_flush
   sink-kind:  store
-  sink-loc:   drivers/power/supply/power_supply_core.c:785
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:102
 
 [7] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_cmd_transfer_to_host_2d
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:100
-
-[8] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_resource_flush
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_cmd_resource_flush
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:100
-
-[9] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_cmd_transfer_to_host_2d
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:101
-
-[10] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_resource_flush
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_cmd_resource_flush
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:101
-
-[11] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_resource_flush
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_cmd_resource_flush
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:102
-
-[12] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_cmd_transfer_to_host_2d
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:102
-
-[13] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -106,7 +58,7 @@ malloc-checker reports: 43
   call-chain:
     virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
 
-[14] unchecked allocation use
+[8] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -116,7 +68,17 @@ malloc-checker reports: 43
   call-chain:
     virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
 
-[15] unchecked allocation use
+[9] unchecked allocation use
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
+  sink-kind:  store
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:364
+  call-chain:
+    virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
+
+[10] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -126,13 +88,63 @@ malloc-checker reports: 43
   call-chain:
     virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
 
+[11] unchecked allocation use
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
+  sink-kind:  load
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
+  call-chain:
+    virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
+
+[12] unchecked allocation use
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
+  sink-kind:  load
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
+  call-chain:
+    virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
+
+[13] unchecked allocation use
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_resource_flush
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
+  sink-kind:  load
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
+  call-chain:
+    virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
+
+[14] unchecked allocation use
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_resource_flush
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
+  sink-kind:  load
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
+  call-chain:
+    virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
+
+[15] unchecked allocation use
+  alloc-kind: kmem_cache_alloc
+  alloc-func: virtio_gpu_panic_cmd_resource_flush
+  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
+  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
+  sink-kind:  load
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:443
+  call-chain:
+    virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
+
 [16] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
   sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  store
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:364
+  sink-kind:  load
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:443
   call-chain:
     virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
 
@@ -142,7 +154,7 @@ malloc-checker reports: 43
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
   sink-func:  virtio_gpu_panic_queue_ctrl_buffer
   sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:444
   call-chain:
     virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
 
@@ -152,71 +164,11 @@ malloc-checker reports: 43
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
   sink-func:  virtio_gpu_panic_queue_ctrl_buffer
   sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
+  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:444
   call-chain:
     virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
 
 [19] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
-  call-chain:
-    virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
-
-[20] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_resource_flush
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:437
-  call-chain:
-    virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
-
-[21] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_resource_flush
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:443
-  call-chain:
-    virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
-
-[22] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:443
-  call-chain:
-    virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
-
-[23] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_resource_flush
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:444
-  call-chain:
-    virtio_gpu_panic_cmd_resource_flush -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:690
-
-[24] unchecked allocation use
-  alloc-kind: kmem_cache_alloc
-  alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
-  alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
-  sink-func:  virtio_gpu_panic_queue_ctrl_buffer
-  sink-kind:  load
-  sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:444
-  call-chain:
-    virtio_gpu_panic_cmd_transfer_to_host_2d -> virtio_gpu_panic_queue_ctrl_buffer @ drivers/gpu/drm/virtio/virtgpu_vq.c:745
-
-[25] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -224,7 +176,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:681
 
-[26] unchecked allocation use
+[20] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -232,7 +184,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:683
 
-[27] unchecked allocation use
+[21] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -240,7 +192,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:684
 
-[28] unchecked allocation use
+[22] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -248,7 +200,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:685
 
-[29] unchecked allocation use
+[23] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -256,7 +208,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:686
 
-[30] unchecked allocation use
+[24] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -264,7 +216,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:687
 
-[31] unchecked allocation use
+[25] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -272,7 +224,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:688
 
-[32] unchecked allocation use
+[26] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -280,7 +232,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:735
 
-[33] unchecked allocation use
+[27] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -288,7 +240,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:737
 
-[34] unchecked allocation use
+[28] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -296,7 +248,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:738
 
-[35] unchecked allocation use
+[29] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -304,7 +256,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:739
 
-[36] unchecked allocation use
+[30] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -312,7 +264,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:740
 
-[37] unchecked allocation use
+[31] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -320,7 +272,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:741
 
-[38] unchecked allocation use
+[32] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -328,7 +280,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:742
 
-[39] unchecked allocation use
+[33] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -336,7 +288,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:743
 
-[40] unchecked allocation use
+[34] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -344,7 +296,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:98
 
-[41] unchecked allocation use
+[35] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -352,7 +304,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:98
 
-[42] unchecked allocation use
+[36] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_transfer_to_host_2d
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
@@ -360,7 +312,7 @@ malloc-checker reports: 43
   sink-kind:  store
   sink-loc:   drivers/gpu/drm/virtio/virtgpu_vq.c:99
 
-[43] unchecked allocation use
+[37] unchecked allocation use
   alloc-kind: kmem_cache_alloc
   alloc-func: virtio_gpu_panic_cmd_resource_flush
   alloc-loc:  drivers/gpu/drm/virtio/virtgpu_vq.c:96
