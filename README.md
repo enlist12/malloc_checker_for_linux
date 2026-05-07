@@ -13,6 +13,74 @@ p->field = 1;
 
 当前实现输入为 `.bc` / `.ll` 文件，输出“分配点 -> 解引用点”的报告。
 
+## 当前版本的主要修改
+
+为了降低 Linux 内核大规模 IR 上的误报，当前版本相对最初原型做了几类重要收敛：
+
+1. source 识别改成了白名单，而不是宽松前缀匹配。
+
+这可以避免把 `vmalloc_to_page` 这类“名字前缀像 allocator，但实际不是 allocator”的函数误识别成分配源。
+
+2. 外层 allocator wrapper 优先于底层 `__` 系列实现。
+
+例如：
+
+- `kzalloc_obj`
+- `kmalloc_obj`
+- `kmalloc_node`
+
+这类外层接口会优先作为 source；
+而像 `__kmalloc`、`__kmalloc_node_track_caller_noprof` 这种底层实现，在明显处于 wrapper 内部时会降级，不优先从底层起报。
+
+3. 只要分配返回值在值流中出现过 `NULL` 比较，就直接裁掉该 source。
+
+并且这个裁剪支持：
+
+- 函数内 SSA 传播
+- `phi/select/gep/cast`
+- 简单栈槽位 `store/load`
+- `return -> caller` 的跨函数返回链
+
+因此像“包装函数返回后，调用点立即 `if (!p)` 检查”这种情况也会被裁掉。
+
+4. `__GFP_NOFAIL` 分配直接跳过。
+
+不仅支持直接常量 flags，也支持：
+
+- `flags | __GFP_NOFAIL`
+- `gfp` 作为参数在 wrapper 中层层转发
+
+只要最终可回溯到 `__GFP_NOFAIL`，就会被视为不可失败分配并跳过。
+
+5. 若干内部已封装错误语义的 API 家族被整体排除。
+
+当前默认不检查：
+
+- `memdup*`
+- `kmemdup*`
+- `vmemdup_user`
+- `strndup_user`
+
+原因是它们常带有内部错误路径、`ERR_PTR` 语义，继续按“普通可能返回 `NULL` 的分配”分析会显著放大误报。
+
+6. `.init.text` / `__init` 代码整体跳过。
+
+启动期初始化失败通常不属于当前更关注的运行期问题，继续纳入只会增加噪声。
+
+7. 释放函数不再作为 sink，也不再向内传播。
+
+当前把下面这类释放族函数当作终止点：
+
+- `kfree`
+- `kvfree`
+- `vfree`
+- `kmem_cache_free`
+- `kfree_sensitive`
+- `kfree_const`
+- `free_percpu`
+
+这样可以避免把 `kfree(NULL)` 之类合法路径一路追进 `slub` 调试代码，再在 `memchr_inv`、`check_object` 之类内部函数上产生假阳性。
+
 ## 检测目标
 
 重点关注 Linux 内核中常见的返回指针的分配函数，例如：
@@ -34,6 +102,8 @@ p->field = 1;
 - `devm_kstrdup`
 
 代码里采用的是“前缀匹配”，因此也覆盖诸如 `__kmalloc`、`kmem_cache_alloc_noprof`、`krealloc_node_align_noprof` 这类变体。
+
+当前 source 识别已经改成“明确白名单函数名”，不是任意前缀命中。
 
 以下几类当前默认不检查：
 
@@ -124,6 +194,8 @@ if (!IS_ERR(res))
 只保留局部 `alloca` 栈槽位上的简单 spill / reload。
 
 5. `call-arg-deref` 被大幅收紧，只保留高置信度目标参数。
+
+6. `kfree` / `kvfree` / `vfree` 等释放族函数不会作为 sink，也不会继续向其内部传播。
 
 这样做的结果是：
 
