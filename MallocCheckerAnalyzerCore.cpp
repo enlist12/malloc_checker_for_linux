@@ -94,7 +94,9 @@ static bool isNullConstant(const Value *V) {
   return isa<ConstantPointerNull>(V);
 }
 
-static bool hasNullComparisonInValueFlow(const Value *Root) {
+static bool hasNullComparisonInValueFlow(
+    const Value *Root,
+    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> *Callers) {
   SmallVector<const Value *, 32> Worklist;
   SmallPtrSet<const Value *, 32> Seen;
   Worklist.push_back(Root);
@@ -134,6 +136,18 @@ static bool hasNullComparisonInValueFlow(const Value *Root) {
             V->stripPointerCasts()) {
           Worklist.push_back(LI);
         }
+        continue;
+      }
+
+      if (auto *RI = dyn_cast<ReturnInst>(U)) {
+        if (!Callers)
+          continue;
+        const Function *F = RI->getFunction();
+        auto It = Callers->find(const_cast<Function *>(F));
+        if (It == Callers->end())
+          continue;
+        for (CallBase *CallerCB : It->second)
+          Worklist.push_back(CallerCB);
       }
     }
   }
@@ -307,24 +321,106 @@ static bool isAllocatorName(StringRef Name, std::string &Kind) {
     return false;
   }
 
-  static const char *Prefixes[] = {
-      "kmalloc",         "kzalloc",         "kcalloc",
-      "krealloc",        "kvmalloc",        "kvzalloc",
-      "kvcalloc",        "vmalloc",         "vzalloc",
-      "vcalloc",         "kmem_cache_alloc","kstrdup",
-      "kstrndup",
-      "kasprintf",       "kvasprintf",      "devm_kmalloc",
-      "devm_kzalloc",    "devm_kcalloc",    "devm_krealloc",
-      "devm_kstrdup",    "devm_kasprintf",
-      "dma_alloc",       "usb_alloc",       "__kmalloc",
-      "__kzalloc",       "__vmalloc",       "__kvmalloc",
-      "__krealloc"};
+  static const std::pair<const char *, const char *> Names[] = {
+      {"kmalloc", "kmalloc"},
+      {"kmalloc_obj", "kmalloc"},
+      {"kmalloc_node", "kmalloc"},
+      {"kmalloc_nolock", "kmalloc"},
+      {"kzalloc", "kzalloc"},
+      {"kzalloc_obj", "kzalloc"},
+      {"kzalloc_node", "kzalloc"},
+      {"kcalloc", "kcalloc"},
+      {"kcalloc_node", "kcalloc"},
+      {"krealloc", "krealloc"},
+      {"krealloc_array", "krealloc"},
+      {"kvmalloc", "kvmalloc"},
+      {"kvmalloc_array", "kvmalloc"},
+      {"kvzalloc", "kvzalloc"},
+      {"kvcalloc", "kvcalloc"},
+      {"vmalloc", "vmalloc"},
+      {"vzalloc", "vzalloc"},
+      {"vcalloc", "vcalloc"},
+      {"kmem_cache_alloc", "kmem_cache_alloc"},
+      {"kmem_cache_alloc_node", "kmem_cache_alloc"},
+      {"kstrdup", "kstrdup"},
+      {"kstrndup", "kstrndup"},
+      {"kasprintf", "kasprintf"},
+      {"kvasprintf", "kvasprintf"},
+      {"devm_kmalloc", "devm_kmalloc"},
+      {"devm_kzalloc", "devm_kzalloc"},
+      {"devm_kcalloc", "devm_kcalloc"},
+      {"devm_krealloc", "devm_krealloc"},
+      {"devm_kstrdup", "devm_kstrdup"},
+      {"devm_kasprintf", "devm_kasprintf"},
+      {"dma_alloc", "dma_alloc"},
+      {"usb_alloc", "usb_alloc"},
+      {"__kmalloc", "__kmalloc"},
+      {"__kmalloc_node", "__kmalloc"},
+      {"__kzalloc", "__kzalloc"},
+      {"__vmalloc", "__vmalloc"},
+      {"__kvmalloc", "__kvmalloc"},
+      {"__krealloc", "__krealloc"},
+      {"kmalloc_noprof", "__kmalloc"},
+      {"kmalloc_node_noprof", "__kmalloc"},
+      {"kzalloc_noprof", "__kzalloc"},
+      {"kcalloc_noprof", "__kmalloc"},
+      {"krealloc_noprof", "__krealloc"},
+      {"kmem_cache_alloc_noprof", "kmem_cache_alloc"},
+      {"kmem_cache_alloc_node_noprof", "kmem_cache_alloc"},
+      {"krealloc_node_align_noprof", "__krealloc"},
+      {"__kmalloc_node_track_caller_noprof", "__kmalloc"},
+      {"kzalloc_node_noprof", "__kzalloc"},
+  };
 
-  for (const char *Prefix : Prefixes) {
-    if (Name.startswith(Prefix)) {
-      Kind = Prefix;
+  for (const auto &Entry : Names) {
+    if (Name == Entry.first) {
+      Kind = Entry.second;
       return true;
     }
+  }
+  return false;
+}
+
+static bool isPreferredOuterAllocatorWrapper(StringRef FuncName) {
+  if (FuncName.startswith("__"))
+    return false;
+  std::string Kind;
+  return isAllocatorName(FuncName, Kind);
+}
+
+static bool isExcludedDupFamily(StringRef Name) {
+  return Name.startswith("memdup") || Name.startswith("vmemdup_user") ||
+         Name.startswith("kmemdup") || Name.startswith("kmemdup_nul") ||
+         Name.startswith("strndup_user");
+}
+
+static bool isFreeLikeFunction(StringRef Name) {
+  static const char *Prefixes[] = {
+      "kfree",         "kvfree",        "vfree",          "kvfree_sensitive",
+      "kfree_sensitive","	kfree_rcu",    "kmem_cache_free","free_percpu",
+      "kzfree",        "kfree_const",   "kvfree_rcu",     "vfree_atomic"};
+  for (const char *Prefix : Prefixes) {
+    if (Name.startswith(Prefix))
+      return true;
+  }
+  return false;
+}
+
+static bool isAllocatorImplementationFunction(StringRef Name) {
+  if (isExcludedDupFamily(Name))
+    return true;
+
+  static const char *Prefixes[] = {
+      "__kmalloc",      "kmalloc_noprof",    "kzalloc_noprof",
+      "kcalloc_noprof", "krealloc_noprof",   "kmem_cache_alloc_noprof",
+      "__do_kmalloc",   "kmalloc_trace",     "kfree_sensitive",
+      "__kvmalloc",     "__vmalloc",         "slab_",
+      "__slab",         "kmalloc_large",     "kmalloc_order",
+      "kvmalloc_node"};
+
+  for (const char *Prefix : Prefixes) {
+    if (Name.startswith(Prefix))
+      return true;
   }
   return false;
 }
@@ -343,6 +439,8 @@ static Function *resolveDirectCallee(Function *F, AnalysisState &State) {
 static bool isInterestingDeclSink(const CallBase &CB, unsigned ArgNo) {
   Function *Callee = CB.getCalledFunction();
   if (!Callee)
+    return false;
+  if (isFreeLikeFunction(Callee->getName()))
     return false;
   if (Callee->isIntrinsic()) {
     switch (Callee->getIntrinsicID()) {
@@ -491,6 +589,76 @@ static const ConstantInt *asIntegerConstant(const Value *V) {
   return nullptr;
 }
 
+static bool valueHasNoFailBit(
+    const Value *V,
+    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> &Callers,
+    SmallPtrSetImpl<const Value *> &Visited);
+
+static bool anyCallerPassesNoFail(
+    const Argument *Arg,
+    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> &Callers,
+    SmallPtrSetImpl<const Value *> &Visited) {
+  const Function *F = Arg->getParent();
+  auto It = Callers.find(const_cast<Function *>(F));
+  if (It == Callers.end())
+    return false;
+
+  unsigned ArgNo = Arg->getArgNo();
+  for (CallBase *CallerCB : It->second) {
+    if (ArgNo >= CallerCB->arg_size())
+      continue;
+    if (valueHasNoFailBit(CallerCB->getArgOperand(ArgNo), Callers, Visited))
+      return true;
+  }
+  return false;
+}
+
+static bool valueHasNoFailBit(
+    const Value *V,
+    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> &Callers,
+    SmallPtrSetImpl<const Value *> &Visited) {
+  V = V->stripPointerCasts();
+  if (!Visited.insert(V).second)
+    return false;
+
+  if (const ConstantInt *CI = asIntegerConstant(V))
+    return (CI->getZExtValue() & GFPNoFailBit) != 0;
+
+  if (const auto *Arg = dyn_cast<Argument>(V))
+    return anyCallerPassesNoFail(Arg, Callers, Visited);
+
+  if (const auto *BO = dyn_cast<BinaryOperator>(V)) {
+    switch (BO->getOpcode()) {
+    case Instruction::Or:
+    case Instruction::And:
+      return valueHasNoFailBit(BO->getOperand(0), Callers, Visited) ||
+             valueHasNoFailBit(BO->getOperand(1), Callers, Visited);
+    default:
+      break;
+    }
+  }
+
+  if (const auto *PN = dyn_cast<PHINode>(V)) {
+    for (const Value *Incoming : PN->incoming_values()) {
+      if (valueHasNoFailBit(Incoming, Callers, Visited))
+        return true;
+    }
+    return false;
+  }
+
+  if (const auto *SI = dyn_cast<SelectInst>(V))
+    return valueHasNoFailBit(SI->getTrueValue(), Callers, Visited) ||
+           valueHasNoFailBit(SI->getFalseValue(), Callers, Visited);
+
+  if (const auto *I = dyn_cast<Instruction>(V)) {
+    if (isa<ZExtInst>(I) || isa<SExtInst>(I) || isa<TruncInst>(I)) {
+      return valueHasNoFailBit(I->getOperand(0), Callers, Visited);
+    }
+  }
+
+  return false;
+}
+
 static int getGFPArgIndex(StringRef AllocName, unsigned ArgCount) {
   if (ArgCount == 0)
     return -1;
@@ -519,14 +687,14 @@ static int getGFPArgIndex(StringRef AllocName, unsigned ArgCount) {
   return -1;
 }
 
-static bool allocatorIsNoFail(const CallBase &CB, StringRef AllocName) {
+static bool allocatorIsNoFail(
+    const CallBase &CB, StringRef AllocName,
+    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> &Callers) {
   int GFPArgIndex = getGFPArgIndex(AllocName, CB.arg_size());
   if (GFPArgIndex < 0 || static_cast<unsigned>(GFPArgIndex) >= CB.arg_size())
     return false;
-  const ConstantInt *CI = asIntegerConstant(CB.getArgOperand(GFPArgIndex));
-  if (!CI)
-    return false;
-  return (CI->getZExtValue() & GFPNoFailBit) != 0;
+  SmallPtrSet<const Value *, 32> Visited;
+  return valueHasNoFailBit(CB.getArgOperand(GFPArgIndex), Callers, Visited);
 }
 
 bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
@@ -580,6 +748,8 @@ void collectAllocationSources(AnalysisState &State) {
     for (Function &F : *ModulePtr) {
       if (shouldSkipFunction(F))
         continue;
+      if (isAllocatorImplementationFunction(F.getName()))
+        continue;
       for (Instruction &I : instructions(F)) {
         auto *CB = dyn_cast<CallBase>(&I);
         if (!CB || !CB->getType()->isPointerTy())
@@ -592,9 +762,12 @@ void collectAllocationSources(AnalysisState &State) {
         std::string Kind;
         if (!isAllocatorName(Callee->getName(), Kind))
           continue;
-        if (allocatorIsNoFail(*CB, Callee->getName()))
+        if (Callee->getName().startswith("__") &&
+            isPreferredOuterAllocatorWrapper(F.getName()))
           continue;
-        if (hasNullComparisonInValueFlow(CB))
+        if (allocatorIsNoFail(*CB, Callee->getName(), State.Callers))
+          continue;
+        if (hasNullComparisonInValueFlow(CB, &State.Callers))
           continue;
 
         Source Src;
@@ -700,6 +873,8 @@ void analyzeSources(AnalysisState &State) {
             if (!sameTrackedValue(CB->getArgOperand(ArgNo), Tracked))
               continue;
             if (isValueNonnullAtInstruction(Tracked, CB, DT))
+              continue;
+            if (Callee && isFreeLikeFunction(Callee->getName()))
               continue;
             if (!Callee || Callee->isDeclaration() || ArgNo >= Callee->arg_size())
               continue;
