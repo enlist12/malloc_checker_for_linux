@@ -13,6 +13,39 @@ p->field = 1;
 
 当前实现输入为 `.bc` / `.ll` 文件，输出“分配点 -> 解引用点”的报告。
 
+## 目录结构
+
+当前仓库按下面的方式组织：
+
+```text
+.
+├── build.sh
+├── Makefile
+├── README.md
+├── src/
+│   ├── MallocCheckerAnalyzer.h
+│   ├── MallocCheckerAnalyzerCore.cpp
+│   ├── MallocCheckerAnalyzerMain.cpp
+│   └── MallocCheckerAnalyzerOptions.cpp
+├── tests/
+│   ├── smoke.c
+│   ├── nofail_smoke.c
+│   └── *.bc
+├── results/
+│   ├── result.txt
+│   └── sure.txt
+└── tools/
+    └── IRDumper/
+```
+
+说明：
+
+- `src/`：analyzer 源码
+- `tests/`：本地 smoke test 与其生成的 bitcode
+- `results/`：扫描结果样例
+- `tools/IRDumper/`：从 `mlta/IRDumper` 复制过来的工具源码，不包含 `build/`
+- `build/`：构建产物目录，默认被 `.gitignore` 忽略
+
 ## 当前版本的主要修改
 
 为了降低 Linux 内核大规模 IR 上的误报，当前版本相对最初原型做了几类重要收敛：
@@ -101,9 +134,18 @@ p->field = 1;
 - `devm_kzalloc`
 - `devm_kstrdup`
 
-代码里采用的是“前缀匹配”，因此也覆盖诸如 `__kmalloc`、`kmem_cache_alloc_noprof`、`krealloc_node_align_noprof` 这类变体。
+当前 source 识别采用“明确白名单函数名”，不是任意前缀命中。
 
-当前 source 识别已经改成“明确白名单函数名”，不是任意前缀命中。
+也就是说，像下面这类函数会被当作分配接口：
+
+- `kmalloc`
+- `kmalloc_node`
+- `kzalloc_obj`
+- `kmem_cache_alloc_node`
+- `kmalloc_noprof`
+- `__kmalloc_node_track_caller_noprof`
+
+而像 `vmalloc_to_page` 这类虽然名字前缀看起来像 allocator、但实际不是 allocator 的函数，不会被误识别成 source。
 
 以下几类当前默认不检查：
 
@@ -235,10 +277,23 @@ if (!IS_ERR(res))
 ./build.sh
 ```
 
+或者：
+
+```bash
+make
+```
+
 产物：
 
 ```bash
-./malloc-checker-analyzer
+./build/malloc-checker-analyzer
+```
+
+如果要同时构建 analyzer 与 IRDumper，可用：
+
+```bash
+make analyzer
+make irdumper
 ```
 
 ## 使用方法
@@ -246,26 +301,26 @@ if (!IS_ERR(res))
 ### 1. 直接分析单个 `.bc` / `.ll`
 
 ```bash
-./malloc-checker-analyzer input.bc
-./malloc-checker-analyzer input.ll
+./build/malloc-checker-analyzer input.bc
+./build/malloc-checker-analyzer input.ll
 ```
 
 ### 2. 分析多个文件
 
 ```bash
-./malloc-checker-analyzer a.bc b.bc c.bc
+./build/malloc-checker-analyzer a.bc b.bc c.bc
 ```
 
 ### 3. 通过列表文件输入
 
 ```bash
-./malloc-checker-analyzer --bc-list files.list
+./build/malloc-checker-analyzer --bc-list files.list
 ```
 
 或者：
 
 ```bash
-./malloc-checker-analyzer files.list
+./build/malloc-checker-analyzer files.list
 ```
 
 其中 `files.list` 每行一个路径。
@@ -273,7 +328,7 @@ if (!IS_ERR(res))
 ### 4. 输出到文件
 
 ```bash
-./malloc-checker-analyzer input.bc -filename result.txt
+./build/malloc-checker-analyzer input.bc -filename result.txt
 ```
 
 ## 常用参数
@@ -329,6 +384,10 @@ if (!IS_ERR(res))
   - 共享数据结构声明
 - `build.sh`
   - 构建脚本
+- `Makefile`
+  - 顶层构建入口
+- `tools/IRDumper/`
+  - 复制整理后的 IRDumper 工具
 
 ## 后续改进方向
 

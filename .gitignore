@@ -1,4 +1,7 @@
 AGENTS.md
-nofail_smoke.bc
-smoke.bc
-sure
+build/
+malloc-checker-analyzer
+tests/*.bc
+tools/IRDumper/build/
+tools/IRDumper/*.so
+tools/IRDumper/*.o

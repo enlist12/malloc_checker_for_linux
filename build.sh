@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SRC_DIR="${ROOT_DIR}/src"
+BUILD_DIR="${ROOT_DIR}/build"
+
 LLVM_CONFIG=${LLVM_CONFIG:-}
 if [[ -z "${LLVM_CONFIG}" ]]; then
   if command -v llvm-config-15 >/dev/null 2>&1; then
@@ -12,12 +16,14 @@ if [[ -z "${LLVM_CONFIG}" ]]; then
   fi
 fi
 
+mkdir -p "${BUILD_DIR}"
+
 clang++-15 \
-  MallocCheckerAnalyzerMain.cpp \
-  MallocCheckerAnalyzerOptions.cpp \
-  MallocCheckerAnalyzerCore.cpp \
+  "${SRC_DIR}/MallocCheckerAnalyzerMain.cpp" \
+  "${SRC_DIR}/MallocCheckerAnalyzerOptions.cpp" \
+  "${SRC_DIR}/MallocCheckerAnalyzerCore.cpp" \
   -std=c++17 \
   -O2 \
   -g \
-  -o malloc-checker-analyzer \
+  -o "${BUILD_DIR}/malloc-checker-analyzer" \
   $("$LLVM_CONFIG" --cxxflags --ldflags --libs core irreader support analysis)
