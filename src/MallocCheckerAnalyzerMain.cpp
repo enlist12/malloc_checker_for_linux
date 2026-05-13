@@ -7,8 +7,8 @@ using namespace llvm;
 
 int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
-  cl::ParseCommandLineOptions(argc, argv,
-                              "linux allocator unchecked-use analyzer\n");
+  cl::ParseCommandLineOptions(
+      argc, argv, "linux nullable return unchecked-use analyzer\n");
 
   std::string Error;
   std::vector<std::string> Paths = mallocchecker::collectInputPaths(Error);
@@ -25,15 +25,27 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  mallocchecker::logPhase("phase 2/4 building direct-call index");
+  mallocchecker::logPhase("phase 2/5 building direct-call index");
   mallocchecker::buildCallers(State);
 
-  mallocchecker::logPhase("phase 3/4 collecting allocation sources");
-  mallocchecker::collectAllocationSources(State);
-  mallocchecker::logPhase("found " + std::to_string(State.Sources.size()) +
-                          " allocation sources");
+  mallocchecker::logPhase("phase 3/6 collecting panic slab caches");
+  mallocchecker::collectPanicSlabCaches(State);
+  mallocchecker::logPhase("found " +
+                          std::to_string(State.PanicSlabCaches.size()) +
+                          " panic slab caches");
 
-  mallocchecker::logPhase("phase 4/4 tracking unchecked dereferences");
+  mallocchecker::logPhase("phase 4/6 computing may-return-null functions");
+  mallocchecker::computeMayReturnNullFunctions(State);
+  mallocchecker::logPhase(
+      "found " + std::to_string(State.MayReturnNullFunctions.size()) +
+      " may-return-null functions");
+
+  mallocchecker::logPhase("phase 5/6 collecting nullable-return sources");
+  mallocchecker::collectSources(State);
+  mallocchecker::logPhase("found " + std::to_string(State.Sources.size()) +
+                          " nullable-return sources");
+
+  mallocchecker::logPhase("phase 6/6 tracking unchecked dereferences");
   mallocchecker::analyzeSources(State);
 
   std::unique_ptr<raw_ostream> OS = mallocchecker::createOutputStream(Error);

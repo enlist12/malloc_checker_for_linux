@@ -29,9 +29,9 @@ struct FunctionRecord {
 };
 
 struct Source {
-  const llvm::Instruction *AllocSite = nullptr;
-  llvm::Function *AllocFunction = nullptr;
-  std::string AllocKind;
+  const llvm::Instruction *SourceSite = nullptr;
+  llvm::Function *SourceFunction = nullptr;
+  std::string SourceKind;
 };
 
 struct Report {
@@ -49,6 +49,8 @@ struct AnalysisState {
   std::unordered_map<std::string, FunctionRecord> Definitions;
   std::unordered_map<llvm::Function *, llvm::SmallVector<llvm::CallBase *, 16>>
       Callers;
+  std::unordered_set<const llvm::Value *> PanicSlabCaches;
+  std::unordered_set<llvm::Function *> MayReturnNullFunctions;
   std::vector<Source> Sources;
   std::vector<Report> Reports;
 };
@@ -72,7 +74,9 @@ std::string formatValue(const llvm::Value *V);
 bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
                  std::string &Error);
 void buildCallers(AnalysisState &State);
-void collectAllocationSources(AnalysisState &State);
+void collectPanicSlabCaches(AnalysisState &State);
+void computeMayReturnNullFunctions(AnalysisState &State);
+void collectSources(AnalysisState &State);
 void analyzeSources(AnalysisState &State);
 void writeReports(const AnalysisState &State, llvm::raw_ostream &OS);
 

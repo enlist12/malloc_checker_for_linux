@@ -10,6 +10,7 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
@@ -63,24 +64,58 @@ static const AllocaInst *asTrackedStackSlot(const Value *V) {
 }
 
 struct ReportKey {
-  const Instruction *AllocSite = nullptr;
-  const Instruction *Sink = nullptr;
-  std::string SinkKind;
-  SmallVector<std::string, 8> CallChain;
+  const Instruction *SourceSite = nullptr;
+  const Function *SourceFunction = nullptr;
+  std::string SourceKind;
 
   bool operator==(const ReportKey &Other) const {
-    return AllocSite == Other.AllocSite && Sink == Other.Sink &&
-           SinkKind == Other.SinkKind && CallChain == Other.CallChain;
+    return SourceSite == Other.SourceSite &&
+           SourceFunction == Other.SourceFunction &&
+           SourceKind == Other.SourceKind;
   }
 };
 
 struct ReportKeyHash {
   size_t operator()(const ReportKey &K) const {
-    size_t H = reinterpret_cast<uintptr_t>(K.AllocSite);
-    H ^= reinterpret_cast<uintptr_t>(K.Sink) + 0x9e3779b9 + (H << 6) + (H >> 2);
-    H ^= std::hash<std::string>{}(K.SinkKind) + 0x9e3779b9 + (H << 6) + (H >> 2);
-    for (const std::string &Step : K.CallChain)
-      H ^= std::hash<std::string>{}(Step) + 0x9e3779b9 + (H << 6) + (H >> 2);
+    size_t H = reinterpret_cast<uintptr_t>(K.SourceSite);
+    H ^= reinterpret_cast<uintptr_t>(K.SourceFunction) + 0x9e3779b9 + (H << 6) +
+         (H >> 2);
+    H ^= std::hash<std::string>{}(K.SourceKind) + 0x9e3779b9 + (H << 6) +
+         (H >> 2);
+    return H;
+  }
+};
+
+struct ValuePairKey {
+  const Value *A = nullptr;
+  const Value *B = nullptr;
+
+  bool operator==(const ValuePairKey &Other) const {
+    return A == Other.A && B == Other.B;
+  }
+};
+
+struct ValueAtKey {
+  const Value *V = nullptr;
+  const Instruction *At = nullptr;
+
+  bool operator==(const ValueAtKey &Other) const {
+    return V == Other.V && At == Other.At;
+  }
+};
+
+struct ValueAtKeyHash {
+  size_t operator()(const ValueAtKey &K) const {
+    size_t H = reinterpret_cast<uintptr_t>(K.V);
+    H ^= reinterpret_cast<uintptr_t>(K.At) + 0x9e3779b9 + (H << 6) + (H >> 2);
+    return H;
+  }
+};
+
+struct ValuePairKeyHash {
+  size_t operator()(const ValuePairKey &K) const {
+    size_t H = reinterpret_cast<uintptr_t>(K.A);
+    H ^= reinterpret_cast<uintptr_t>(K.B) + 0x9e3779b9 + (H << 6) + (H >> 2);
     return H;
   }
 };
@@ -88,10 +123,20 @@ struct ReportKeyHash {
 static const Value *stripTrackedValue(const Value *V);
 
 static bool isNullConstant(const Value *V) {
+  if (!V)
+    return false;
   V = V->stripPointerCasts();
   if (auto *CI = dyn_cast<ConstantInt>(V))
     return CI->isZero();
   return isa<ConstantPointerNull>(V);
+}
+
+static bool isNonnullPointerConstant(const Value *V) {
+  if (!V)
+    return false;
+  if (!V->getType()->isPointerTy() || !isa<Constant>(V))
+    return false;
+  return !isNullConstant(V);
 }
 
 static bool hasNullComparisonInValueFlow(
@@ -167,6 +212,8 @@ static bool hasNullComparisonInValueFlow(
 }
 
 static const Value *stripTrackedValue(const Value *V) {
+  if (!V)
+    return nullptr;
   while (true) {
     if (auto *CE = dyn_cast<ConstantExpr>(V)) {
       if (CE->isCast() || CE->getOpcode() == Instruction::GetElementPtr) {
@@ -185,10 +232,13 @@ static const Value *stripTrackedValue(const Value *V) {
   }
 }
 
-static bool sameTrackedValueOneWay(const Value *A, const Value *B,
-                                   SmallPtrSetImpl<const Value *> &Visited) {
+static bool sameTrackedValueOneWay(
+    const Value *A, const Value *B,
+    std::unordered_set<ValuePairKey, ValuePairKeyHash> &VisitedPairs) {
   A = stripTrackedValue(A);
   B = stripTrackedValue(B);
+  if (!A || !B)
+    return false;
   if (A == B)
     return true;
 
@@ -199,20 +249,20 @@ static bool sameTrackedValueOneWay(const Value *A, const Value *B,
         return true;
     }
   }
-  if (!Visited.insert(A).second)
+  if (!VisitedPairs.insert(ValuePairKey{A, B}).second)
     return false;
 
   if (auto *PN = dyn_cast<PHINode>(A)) {
     for (const Value *Incoming : PN->incoming_values()) {
-      if (sameTrackedValueOneWay(Incoming, B, Visited))
+      if (sameTrackedValueOneWay(Incoming, B, VisitedPairs))
         return true;
     }
     return false;
   }
 
   if (auto *SI = dyn_cast<SelectInst>(A))
-    return sameTrackedValueOneWay(SI->getTrueValue(), B, Visited) ||
-           sameTrackedValueOneWay(SI->getFalseValue(), B, Visited);
+    return sameTrackedValueOneWay(SI->getTrueValue(), B, VisitedPairs) ||
+           sameTrackedValueOneWay(SI->getFalseValue(), B, VisitedPairs);
 
   if (auto *LI = dyn_cast<LoadInst>(A)) {
     const Value *Ptr = LI->getPointerOperand()->stripPointerCasts();
@@ -220,7 +270,7 @@ static bool sameTrackedValueOneWay(const Value *A, const Value *B,
       for (const User *U : AI->users()) {
         if (auto *Store = dyn_cast<StoreInst>(U)) {
           if (Store->getPointerOperand()->stripPointerCasts() == AI &&
-              sameTrackedValueOneWay(Store->getValueOperand(), B, Visited))
+              sameTrackedValueOneWay(Store->getValueOperand(), B, VisitedPairs))
             return true;
         }
       }
@@ -231,15 +281,19 @@ static bool sameTrackedValueOneWay(const Value *A, const Value *B,
 }
 
 static bool sameTrackedValue(const Value *A, const Value *B) {
-  SmallPtrSet<const Value *, 32> VisitedAB;
+  if (!A || !B)
+    return false;
+  std::unordered_set<ValuePairKey, ValuePairKeyHash> VisitedAB;
   if (sameTrackedValueOneWay(A, B, VisitedAB))
     return true;
-  SmallPtrSet<const Value *, 32> VisitedBA;
+  std::unordered_set<ValuePairKey, ValuePairKeyHash> VisitedBA;
   return sameTrackedValueOneWay(B, A, VisitedBA);
 }
 
 static bool matchNonnullCompare(const Value *Cond, const Value *Target,
                                 bool &TrueMeansNonnull) {
+  if (!Cond || !Target)
+    return false;
   Cond = Cond->stripPointerCasts();
   auto *Cmp = dyn_cast<ICmpInst>(Cond);
   if (!Cmp || !Cmp->isEquality())
@@ -258,14 +312,175 @@ static bool matchNonnullCompare(const Value *Cond, const Value *Target,
   return false;
 }
 
+static bool isDefinitelyNonnullValueAt(const Value *V, const Instruction *At,
+                                       DominatorTree &DT);
+static bool isDefinitelyNonnullValueAtImpl(
+    const Value *V, const Instruction *At, DominatorTree &DT,
+    std::unordered_set<ValueAtKey, ValueAtKeyHash> &Visited);
+
+static const Value *stripIntegerCastValue(const Value *V) {
+  if (!V)
+    return nullptr;
+  while (true) {
+    V = V->stripPointerCasts();
+    if (auto *CE = dyn_cast<ConstantExpr>(V)) {
+      if (CE->isCast()) {
+        V = CE->getOperand(0);
+        continue;
+      }
+    }
+    if (auto *I = dyn_cast<Instruction>(V)) {
+      if (isa<PtrToIntInst>(I) || isa<IntToPtrInst>(I) || isa<ZExtInst>(I) ||
+          isa<SExtInst>(I) || isa<TruncInst>(I)) {
+        V = I->getOperand(0);
+        continue;
+      }
+    }
+    return V;
+  }
+}
+
+static bool isErrThresholdConstant(const Value *V) {
+  if (!V)
+    return false;
+  V = V->stripPointerCasts();
+  const ConstantInt *CI = dyn_cast<ConstantInt>(V);
+  if (!CI) {
+    if (const auto *CE = dyn_cast<ConstantExpr>(V)) {
+      if (CE->isCast())
+        CI = dyn_cast<ConstantInt>(CE->getOperand(0));
+    }
+  }
+  if (!CI)
+    return false;
+  APInt Val = CI->getValue();
+  return Val.isNegative();
+}
+
+static bool matchErrPtrNonnullCompare(const Value *Cond, const Value *Target,
+                                      bool &TrueMeansNonnull) {
+  if (!Cond || !Target)
+    return false;
+  Cond = Cond->stripPointerCasts();
+  auto *Cmp = dyn_cast<ICmpInst>(Cond);
+  if (!Cmp)
+    return false;
+
+  const Value *L = stripIntegerCastValue(Cmp->getOperand(0));
+  const Value *R = stripIntegerCastValue(Cmp->getOperand(1));
+
+  if (sameTrackedValue(L, Target) && isErrThresholdConstant(Cmp->getOperand(1))) {
+    switch (Cmp->getPredicate()) {
+    case CmpInst::ICMP_UGE:
+    case CmpInst::ICMP_UGT:
+    case CmpInst::ICMP_SLT:
+    case CmpInst::ICMP_SLE:
+      TrueMeansNonnull = true;
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  if (sameTrackedValue(R, Target) && isErrThresholdConstant(Cmp->getOperand(0))) {
+    switch (Cmp->getPredicate()) {
+    case CmpInst::ICMP_ULE:
+    case CmpInst::ICMP_ULT:
+    case CmpInst::ICMP_SGT:
+    case CmpInst::ICMP_SGE:
+      TrueMeansNonnull = true;
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  return false;
+}
+
+static bool matchNonnullCondition(const Value *Cond, const Value *Target,
+                                  bool &TrueMeansNonnull) {
+  if (!Cond || !Target)
+    return false;
+  if (matchNonnullCompare(Cond, Target, TrueMeansNonnull))
+    return true;
+  if (matchErrPtrNonnullCompare(Cond, Target, TrueMeansNonnull))
+    return true;
+
+  Cond = Cond->stripPointerCasts();
+  if (auto *Cmp = dyn_cast<ICmpInst>(Cond)) {
+    if (Cmp->isEquality() && Cmp->getOperand(0)->getType()->isIntegerTy(1)) {
+      const Value *Other = nullptr;
+      bool Flip = false;
+      if (const auto *C = dyn_cast<ConstantInt>(Cmp->getOperand(0))) {
+        Other = Cmp->getOperand(1);
+        Flip = C->isZero();
+      } else if (const auto *C = dyn_cast<ConstantInt>(Cmp->getOperand(1))) {
+        Other = Cmp->getOperand(0);
+        Flip = C->isZero();
+      }
+      if (Other) {
+        bool InnerTrueMeansNonnull = false;
+        if (matchNonnullCondition(Other, Target, InnerTrueMeansNonnull)) {
+          bool EqMeansInner = Cmp->getPredicate() == CmpInst::ICMP_EQ;
+          TrueMeansNonnull =
+              (EqMeansInner == !Flip) ? InnerTrueMeansNonnull
+                                      : !InnerTrueMeansNonnull;
+          return true;
+        }
+      }
+    }
+  }
+  if (auto *I = dyn_cast<Instruction>(Cond)) {
+    if (I->getOpcode() == Instruction::Xor && I->getType()->isIntegerTy(1)) {
+      const Value *Other = nullptr;
+      auto *C0 = dyn_cast<ConstantInt>(I->getOperand(0));
+      auto *C1 = dyn_cast<ConstantInt>(I->getOperand(1));
+      if (C0 && C0->isOne())
+        Other = I->getOperand(1);
+      else if (C1 && C1->isOne())
+        Other = I->getOperand(0);
+      if (Other) {
+        bool InnerTrueMeansNonnull = false;
+        if (matchNonnullCondition(Other, Target, InnerTrueMeansNonnull)) {
+          TrueMeansNonnull = !InnerTrueMeansNonnull;
+          return true;
+        }
+      }
+    }
+  }
+  if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
+    bool LTrueMeansNonnull = false;
+    bool RTrueMeansNonnull = false;
+    if (BO->getOpcode() == Instruction::And &&
+        matchNonnullCondition(BO->getOperand(0), Target, LTrueMeansNonnull) &&
+        matchNonnullCondition(BO->getOperand(1), Target, RTrueMeansNonnull) &&
+        LTrueMeansNonnull && RTrueMeansNonnull) {
+      TrueMeansNonnull = true;
+      return true;
+    }
+    if (BO->getOpcode() == Instruction::Or &&
+        matchNonnullCondition(BO->getOperand(0), Target, LTrueMeansNonnull) &&
+        matchNonnullCondition(BO->getOperand(1), Target, RTrueMeansNonnull) &&
+        !LTrueMeansNonnull && !RTrueMeansNonnull) {
+      TrueMeansNonnull = false;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 static bool impliesNonnullOnEdge(const Value *Target, const BasicBlock *Pred,
                                  const BasicBlock *Succ) {
+  if (!Target || !Pred || !Succ)
+    return false;
   auto *BI = dyn_cast<BranchInst>(Pred->getTerminator());
   if (!BI || !BI->isConditional())
     return false;
 
   bool TrueMeansNonnull = false;
-  if (!matchNonnullCompare(BI->getCondition(), Target, TrueMeansNonnull))
+  if (!matchNonnullCondition(BI->getCondition(), Target, TrueMeansNonnull))
     return false;
 
   if (BI->getSuccessor(TrueMeansNonnull ? 0 : 1) == Succ)
@@ -274,6 +489,8 @@ static bool impliesNonnullOnEdge(const Value *Target, const BasicBlock *Pred,
 }
 
 static bool isNonnullAssume(const Instruction &I, const Value *Target) {
+  if (!Target)
+    return false;
   auto *CB = dyn_cast<CallBase>(&I);
   if (!CB || !CB->getCalledFunction())
     return false;
@@ -283,15 +500,20 @@ static bool isNonnullAssume(const Instruction &I, const Value *Target) {
     return false;
 
   bool TrueMeansNonnull = false;
-  return matchNonnullCompare(CB->getArgOperand(0), Target, TrueMeansNonnull) &&
+  return matchNonnullCondition(CB->getArgOperand(0), Target, TrueMeansNonnull) &&
          TrueMeansNonnull;
 }
 
 static bool isValueNonnullAtInstruction(const Value *Target,
                                         const Instruction *At,
                                         DominatorTree &DT) {
+  if (!Target || !At)
+    return false;
   const BasicBlock *BB = At->getParent();
   const Value *Base = stripTrackedValue(Target);
+  if (!Base)
+    return false;
+  const DomTreeNode *BBNode = DT.getNode(BB);
 
   for (const BasicBlock &Candidate : *At->getFunction()) {
     auto *BI = dyn_cast<BranchInst>(Candidate.getTerminator());
@@ -299,11 +521,15 @@ static bool isValueNonnullAtInstruction(const Value *Target,
       continue;
 
     bool TrueMeansNonnull = false;
-    if (!matchNonnullCompare(BI->getCondition(), Base, TrueMeansNonnull))
+    if (!matchNonnullCondition(BI->getCondition(), Base, TrueMeansNonnull))
       continue;
 
     const BasicBlock *SafeSucc = BI->getSuccessor(TrueMeansNonnull ? 0 : 1);
-    if (SafeSucc == BB || DT.dominates(SafeSucc, BB))
+    if (SafeSucc == BB)
+      return true;
+    if (!BBNode)
+      continue;
+    if (DT.getNode(SafeSucc) && DT.dominates(SafeSucc, BB))
       return true;
   }
 
@@ -314,7 +540,10 @@ static bool isValueNonnullAtInstruction(const Value *Target,
       return true;
   }
 
-  for (const DomTreeNode *Node = DT.getNode(BB)->getIDom(); Node;
+  if (!BBNode)
+    return false;
+
+  for (const DomTreeNode *Node = BBNode->getIDom(); Node;
        Node = Node->getIDom()) {
     const BasicBlock *DBB = Node->getBlock();
     for (const Instruction &I : *DBB) {
@@ -322,6 +551,68 @@ static bool isValueNonnullAtInstruction(const Value *Target,
         return true;
     }
   }
+  return false;
+}
+
+static bool isDefinitelyNonnullValueAt(const Value *V, const Instruction *At,
+                                       DominatorTree &DT) {
+  std::unordered_set<ValueAtKey, ValueAtKeyHash> Visited;
+  return isDefinitelyNonnullValueAtImpl(V, At, DT, Visited);
+}
+
+static bool isDefinitelyNonnullValueAtImpl(
+    const Value *V, const Instruction *At, DominatorTree &DT,
+    std::unordered_set<ValueAtKey, ValueAtKeyHash> &Visited) {
+  if (!V || !At)
+    return false;
+  if (isNonnullPointerConstant(V))
+    return true;
+  V = stripTrackedValue(V);
+  if (!V)
+    return false;
+  if (!Visited.insert(ValueAtKey{V, At}).second)
+    return false;
+  if (isNullConstant(V))
+    return false;
+
+  if (isa<Constant>(V))
+    return V->getType()->isPointerTy();
+
+  if (isValueNonnullAtInstruction(V, At, DT))
+    return true;
+
+  if (const auto *SI = dyn_cast<SelectInst>(V)) {
+    if (isDefinitelyNonnullValueAtImpl(SI->getTrueValue(), At, DT, Visited) &&
+        isDefinitelyNonnullValueAtImpl(SI->getFalseValue(), At, DT, Visited))
+      return true;
+
+    bool TrueMeansNonnull = false;
+    if (matchNonnullCondition(SI->getCondition(), SI->getTrueValue(),
+                              TrueMeansNonnull) &&
+        TrueMeansNonnull &&
+        isDefinitelyNonnullValueAtImpl(SI->getFalseValue(), At, DT, Visited))
+      return true;
+    if (matchNonnullCondition(SI->getCondition(), SI->getFalseValue(),
+                              TrueMeansNonnull) &&
+        !TrueMeansNonnull &&
+        isDefinitelyNonnullValueAtImpl(SI->getTrueValue(), At, DT, Visited))
+      return true;
+  }
+
+  if (const auto *PN = dyn_cast<PHINode>(V)) {
+    if (PN->getParent() != At->getParent())
+      return false;
+    for (unsigned I = 0; I < PN->getNumIncomingValues(); ++I) {
+      const BasicBlock *Pred = PN->getIncomingBlock(I);
+      const Instruction *PredTerm = Pred->getTerminator();
+      if (!PredTerm ||
+          !isDefinitelyNonnullValueAtImpl(PN->getIncomingValue(I), PredTerm, DT,
+                                          Visited))
+        return false;
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -353,6 +644,7 @@ static bool isAllocatorName(StringRef Name, std::string &Kind) {
       {"vcalloc", "vcalloc"},
       {"kmem_cache_alloc", "kmem_cache_alloc"},
       {"kmem_cache_alloc_node", "kmem_cache_alloc"},
+      {"kmem_cache_zalloc", "kmem_cache_alloc"},
       {"kstrdup", "kstrdup"},
       {"kstrndup", "kstrndup"},
       {"kasprintf", "kasprintf"},
@@ -371,6 +663,7 @@ static bool isAllocatorName(StringRef Name, std::string &Kind) {
       {"__vmalloc", "__vmalloc"},
       {"__kvmalloc", "__kvmalloc"},
       {"__krealloc", "__krealloc"},
+      {"__kmalloc_cache_noprof", "__kmalloc"},
       {"kmalloc_noprof", "__kmalloc"},
       {"kmalloc_node_noprof", "__kmalloc"},
       {"kzalloc_noprof", "__kzalloc"},
@@ -378,6 +671,7 @@ static bool isAllocatorName(StringRef Name, std::string &Kind) {
       {"krealloc_noprof", "__krealloc"},
       {"kmem_cache_alloc_noprof", "kmem_cache_alloc"},
       {"kmem_cache_alloc_node_noprof", "kmem_cache_alloc"},
+      {"kmem_cache_zalloc_noprof", "kmem_cache_alloc"},
       {"krealloc_node_align_noprof", "__krealloc"},
       {"__kmalloc_node_track_caller_noprof", "__kmalloc"},
       {"kzalloc_node_noprof", "__kzalloc"},
@@ -474,28 +768,33 @@ static bool isInterestingDeclSink(const CallBase &CB, unsigned ArgNo) {
 }
 
 static bool isPointerDerefSink(const Value *Tracked, const Instruction &I,
-                               std::string &Kind) {
+                               std::string &Kind,
+                               const Value *&DerefValue) {
   if (auto *LI = dyn_cast<LoadInst>(&I)) {
     if (sameTrackedValue(LI->getPointerOperand(), Tracked)) {
       Kind = "load";
+      DerefValue = LI->getPointerOperand();
       return true;
     }
   }
   if (auto *SI = dyn_cast<StoreInst>(&I)) {
     if (sameTrackedValue(SI->getPointerOperand(), Tracked)) {
       Kind = "store";
+      DerefValue = SI->getPointerOperand();
       return true;
     }
   }
   if (auto *RMW = dyn_cast<AtomicRMWInst>(&I)) {
     if (sameTrackedValue(RMW->getPointerOperand(), Tracked)) {
       Kind = "atomicrmw";
+      DerefValue = RMW->getPointerOperand();
       return true;
     }
   }
   if (auto *CX = dyn_cast<AtomicCmpXchgInst>(&I)) {
     if (sameTrackedValue(CX->getPointerOperand(), Tracked)) {
       Kind = "cmpxchg";
+      DerefValue = CX->getPointerOperand();
       return true;
     }
   }
@@ -505,6 +804,7 @@ static bool isPointerDerefSink(const Value *Tracked, const Instruction &I,
         continue;
       if (isInterestingDeclSink(*CB, ArgNo)) {
         Kind = "call-arg-deref";
+        DerefValue = CB->getArgOperand(ArgNo);
         return true;
       }
     }
@@ -534,10 +834,9 @@ static void deduplicateReports(std::vector<Report> &Reports) {
 
   for (Report &R : Reports) {
     ReportKey Key;
-    Key.AllocSite = R.Src ? R.Src->AllocSite : nullptr;
-    Key.Sink = R.Sink;
-    Key.SinkKind = R.SinkKind;
-    Key.CallChain.assign(R.CallChain.begin(), R.CallChain.end());
+    Key.SourceSite = R.Src ? R.Src->SourceSite : nullptr;
+    Key.SourceFunction = R.Src ? R.Src->SourceFunction : nullptr;
+    Key.SourceKind = R.Src ? R.Src->SourceKind : std::string();
     if (Seen.insert(std::move(Key)).second)
       Unique.push_back(std::move(R));
   }
@@ -571,6 +870,10 @@ struct LocalCaches {
 } // namespace
 
 static constexpr uint64_t GFPNoFailBit = 1ULL << 15;
+
+static bool valueMayBeNullFromReturns(
+    const Value *V, AnalysisState &State,
+    SmallPtrSetImpl<const Value *> &Visited);
 
 std::string formatDebugLoc(const Instruction *I) {
   if (!I)
@@ -675,6 +978,8 @@ static int getGFPArgIndex(StringRef AllocName, unsigned ArgCount) {
     return -1;
   if (AllocName.startswith("kasprintf") || AllocName.startswith("kvasprintf"))
     return 0;
+  if (AllocName.startswith("__kmalloc_cache_noprof"))
+    return ArgCount > 1 ? 1 : -1;
   if (AllocName.startswith("kmalloc") || AllocName.startswith("kzalloc") ||
       AllocName.startswith("kcalloc") || AllocName.startswith("krealloc") ||
       AllocName.startswith("kvmalloc") || AllocName.startswith("kvzalloc") ||
@@ -693,19 +998,265 @@ static int getGFPArgIndex(StringRef AllocName, unsigned ArgCount) {
       AllocName.startswith("devm_kstrdup") ||
       AllocName.startswith("devm_kmemdup") ||
       AllocName.startswith("devm_kasprintf") ||
-      AllocName.startswith("kmem_cache_alloc"))
+      AllocName.startswith("kmem_cache_alloc") ||
+      AllocName.startswith("kmem_cache_zalloc"))
     return static_cast<int>(ArgCount) - 1;
   return -1;
 }
 
+static bool memoryObjectHasPanicBit(const Value *V,
+                                    SmallPtrSetImpl<const Value *> &Visited) {
+  V = V->stripPointerCasts();
+  if (!Visited.insert(V).second)
+    return false;
+
+  for (const User *U : V->users()) {
+    if (const auto *SI = dyn_cast<StoreInst>(U)) {
+      if (SI->getPointerOperand()->stripPointerCasts() != V)
+        continue;
+      if (const ConstantInt *CI = asIntegerConstant(SI->getValueOperand())) {
+        if ((CI->getZExtValue() & 8ULL) != 0)
+          return true;
+      }
+      continue;
+    }
+
+    if (isa<GetElementPtrInst>(U) || isa<BitCastInst>(U) ||
+        isa<AddrSpaceCastInst>(U)) {
+      if (memoryObjectHasPanicBit(cast<Value>(U), Visited))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+static bool cacheValueIsPanic(const Value *V, AnalysisState &State,
+                              SmallPtrSetImpl<const Value *> &Visited) {
+  V = V->stripPointerCasts();
+  if (!Visited.insert(V).second)
+    return false;
+
+  if (State.PanicSlabCaches.count(V))
+    return true;
+
+  if (const auto *LI = dyn_cast<LoadInst>(V))
+    return cacheValueIsPanic(LI->getPointerOperand(), State, Visited);
+
+  if (const auto *Arg = dyn_cast<Argument>(V)) {
+    auto It = State.Callers.find(const_cast<Function *>(Arg->getParent()));
+    if (It == State.Callers.end())
+      return false;
+    for (CallBase *CallerCB : It->second) {
+      if (Arg->getArgNo() >= CallerCB->arg_size())
+        continue;
+      if (cacheValueIsPanic(CallerCB->getArgOperand(Arg->getArgNo()), State,
+                            Visited))
+        return true;
+    }
+    return false;
+  }
+
+  if (const auto *PN = dyn_cast<PHINode>(V)) {
+    for (const Value *Incoming : PN->incoming_values()) {
+      if (cacheValueIsPanic(Incoming, State, Visited))
+        return true;
+    }
+    return false;
+  }
+
+  if (const auto *SI = dyn_cast<SelectInst>(V))
+    return cacheValueIsPanic(SI->getTrueValue(), State, Visited) ||
+           cacheValueIsPanic(SI->getFalseValue(), State, Visited);
+
+  return false;
+}
+
 static bool allocatorIsNoFail(
-    const CallBase &CB, StringRef AllocName,
-    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> &Callers) {
+    const CallBase &CB, StringRef AllocName, AnalysisState &State) {
+  if (AllocName.startswith("kmem_cache_alloc")) {
+    SmallPtrSet<const Value *, 16> CacheVisited;
+    if (!CB.arg_empty() &&
+        cacheValueIsPanic(CB.getArgOperand(0), State, CacheVisited))
+      return true;
+  }
+
   int GFPArgIndex = getGFPArgIndex(AllocName, CB.arg_size());
   if (GFPArgIndex < 0 || static_cast<unsigned>(GFPArgIndex) >= CB.arg_size())
     return false;
   SmallPtrSet<const Value *, 32> Visited;
-  return valueHasNoFailBit(CB.getArgOperand(GFPArgIndex), Callers, Visited);
+  return valueHasNoFailBit(CB.getArgOperand(GFPArgIndex), State.Callers,
+                           Visited);
+}
+
+static bool valueEscapesThroughMemoryOrCall(
+    const Value *V, SmallPtrSetImpl<const Value *> &Visited) {
+  V = stripTrackedValue(V);
+  if (!Visited.insert(V).second)
+    return false;
+
+  for (const User *U : V->users()) {
+    if (const auto *CB = dyn_cast<CallBase>(U)) {
+      for (const Value *Arg : CB->args()) {
+        if (Arg == V)
+          return true;
+      }
+      continue;
+    }
+
+    if (const auto *SI = dyn_cast<StoreInst>(U)) {
+      if (SI->getValueOperand() == V)
+        return true;
+      continue;
+    }
+
+    if (isa<BitCastInst>(U) || isa<AddrSpaceCastInst>(U) ||
+        isa<GetElementPtrInst>(U) || isa<PHINode>(U) || isa<SelectInst>(U) ||
+        isa<FreezeInst>(U)) {
+      if (valueEscapesThroughMemoryOrCall(cast<Value>(U), Visited))
+        return true;
+    }
+  }
+
+  return false;
+}
+
+static bool isIgnoredPath(StringRef Path) {
+  static const char *Pieces[] = {
+      "/tools/",       "/security/",   "/mm/kasan/", "/mm/kfence/",
+      "/kernel/kcov.c","/kernel/kcsan/","/kernel/kfence/"};
+  for (const char *Piece : Pieces) {
+    if (Path.contains(Piece))
+      return true;
+  }
+  return false;
+}
+
+static bool isIgnoredSourceKind(StringRef Kind) {
+  return Kind == "vmalloc_to_page" || Kind == "debugfs_create_dir" ||
+         Kind == "hlock_class";
+}
+
+static StringRef getModulePath(const Function *F, AnalysisState &State) {
+  auto It = State.FunctionInfo.find(const_cast<Function *>(F));
+  if (It == State.FunctionInfo.end())
+    return StringRef();
+  return It->second.ModulePath;
+}
+
+static bool blockContainsWarningLikePath(const BasicBlock *BB) {
+  for (const Instruction &I : *BB) {
+    const auto *CB = dyn_cast<CallBase>(&I);
+    if (!CB)
+      continue;
+
+    if (const auto *IA = dyn_cast<InlineAsm>(CB->getCalledOperand())) {
+      StringRef Asm = IA->getAsmString();
+      if (Asm.contains("ud2") || Asm.contains("__bug_table"))
+        return true;
+      continue;
+    }
+
+    const Function *Callee = CB->getCalledFunction();
+    if (!Callee)
+      continue;
+    StringRef Name = Callee->getName();
+    if (Name.contains("warn") || Name.contains("WARN") ||
+        Name.contains("bug") || Name.contains("BUG"))
+      return true;
+  }
+  return false;
+}
+
+static bool returnValueMayBeNull(const ReturnInst *RI, const Value *RetVal,
+                                 AnalysisState &State, DominatorTree &DT) {
+  if (const auto *PN = dyn_cast<PHINode>(RetVal)) {
+    if (PN->getParent() == RI->getParent()) {
+      for (unsigned I = 0; I < PN->getNumIncomingValues(); ++I) {
+        const Value *Incoming = PN->getIncomingValue(I);
+        const BasicBlock *Pred = PN->getIncomingBlock(I);
+        if (isNullConstant(Incoming) && blockContainsWarningLikePath(Pred))
+          continue;
+        const Instruction *At = Pred->getTerminator();
+        if (At && isDefinitelyNonnullValueAt(Incoming, At, DT))
+          continue;
+
+        SmallPtrSet<const Value *, 32> Visited;
+        if (valueMayBeNullFromReturns(Incoming, State, Visited))
+          return true;
+      }
+      return false;
+    }
+  }
+
+  if (isDefinitelyNonnullValueAt(RetVal, RI, DT))
+    return false;
+
+  if (isNullConstant(RetVal) && blockContainsWarningLikePath(RI->getParent()))
+    return false;
+
+  SmallPtrSet<const Value *, 32> Visited;
+  return valueMayBeNullFromReturns(RetVal, State, Visited);
+}
+
+static bool valueMayBeNullFromReturns(
+    const Value *V, AnalysisState &State,
+    SmallPtrSetImpl<const Value *> &Visited) {
+  V = stripTrackedValue(V);
+  if (!Visited.insert(V).second)
+    return false;
+
+  if (isNullConstant(V))
+    return true;
+
+  if (const auto *CB = dyn_cast<CallBase>(V)) {
+    Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
+    if (Callee) {
+      std::string Kind;
+      if (isAllocatorName(Callee->getName(), Kind) &&
+          !allocatorIsNoFail(*CB, Callee->getName(), State))
+        return true;
+      if (State.MayReturnNullFunctions.count(Callee))
+        return true;
+    }
+    return false;
+  }
+
+  if (const auto *PN = dyn_cast<PHINode>(V)) {
+    for (const Value *Incoming : PN->incoming_values()) {
+      if (valueMayBeNullFromReturns(Incoming, State, Visited))
+        return true;
+    }
+    return false;
+  }
+
+  if (const auto *SI = dyn_cast<SelectInst>(V))
+    return valueMayBeNullFromReturns(SI->getTrueValue(), State, Visited) ||
+           valueMayBeNullFromReturns(SI->getFalseValue(), State, Visited);
+
+  if (const auto *LI = dyn_cast<LoadInst>(V)) {
+    const Value *Ptr = LI->getPointerOperand()->stripPointerCasts();
+    if (const auto *AI = dyn_cast<AllocaInst>(Ptr)) {
+      bool SawStore = false;
+      for (const User *U : AI->users()) {
+        const auto *Store = dyn_cast<StoreInst>(U);
+        if (!Store || Store->getPointerOperand()->stripPointerCasts() != AI)
+          continue;
+        SawStore = true;
+        if (valueMayBeNullFromReturns(Store->getValueOperand(), State, Visited))
+          return true;
+      }
+      if (SawStore)
+        return false;
+
+      SmallPtrSet<const Value *, 32> EscapeVisited;
+      if (valueEscapesThroughMemoryOrCall(AI, EscapeVisited))
+        return false;
+      return true;
+    }
+  }
+
+  return false;
 }
 
 bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
@@ -736,6 +1287,47 @@ bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
   return true;
 }
 
+void collectPanicSlabCaches(AnalysisState &State) {
+  for (const auto &ModulePtr : State.Modules) {
+    for (Function &F : *ModulePtr) {
+      if (shouldSkipFunction(F))
+        continue;
+      for (Instruction &I : instructions(F)) {
+        auto *CB = dyn_cast<CallBase>(&I);
+        if (!CB)
+          continue;
+        Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
+        if (!Callee || Callee->getName() != "__kmem_cache_create_args")
+          continue;
+
+        bool IsPanic = false;
+        for (const Value *Arg : CB->args()) {
+          if (const ConstantInt *CI = asIntegerConstant(Arg)) {
+            if ((CI->getZExtValue() & 8ULL) != 0) {
+              IsPanic = true;
+              break;
+            }
+          }
+        }
+        if (!IsPanic && CB->arg_size() > 2) {
+          SmallPtrSet<const Value *, 16> Visited;
+          IsPanic = memoryObjectHasPanicBit(CB->getArgOperand(2), Visited);
+        }
+        if (!IsPanic)
+          continue;
+
+        for (const User *U : CB->users()) {
+          const auto *SI = dyn_cast<StoreInst>(U);
+          if (!SI || SI->getValueOperand() != CB)
+            continue;
+          State.PanicSlabCaches.insert(
+              SI->getPointerOperand()->stripPointerCasts());
+        }
+      }
+    }
+  }
+}
+
 void buildCallers(AnalysisState &State) {
   for (const auto &ModulePtr : State.Modules) {
     for (Function &F : *ModulePtr) {
@@ -754,10 +1346,50 @@ void buildCallers(AnalysisState &State) {
   }
 }
 
-void collectAllocationSources(AnalysisState &State) {
+void computeMayReturnNullFunctions(AnalysisState &State) {
+  LocalCaches Caches;
+  bool Changed = true;
+  while (Changed) {
+    Changed = false;
+    for (const auto &ModulePtr : State.Modules) {
+      for (Function &F : *ModulePtr) {
+        if (shouldSkipFunction(F) || !F.getReturnType()->isPointerTy())
+          continue;
+        if (State.MayReturnNullFunctions.count(&F))
+          continue;
+
+        bool MayReturnNull = false;
+        DominatorTree &DT = Caches.getDT(&F);
+        for (Instruction &I : instructions(F)) {
+          auto *RI = dyn_cast<ReturnInst>(&I);
+          if (!RI)
+            continue;
+          const Value *RetVal = RI->getReturnValue();
+          if (!RetVal) {
+            MayReturnNull = true;
+            break;
+          }
+          if (returnValueMayBeNull(RI, RetVal, State, DT)) {
+            MayReturnNull = true;
+            break;
+          }
+        }
+
+        if (!MayReturnNull)
+          continue;
+        State.MayReturnNullFunctions.insert(&F);
+        Changed = true;
+      }
+    }
+  }
+}
+
+void collectSources(AnalysisState &State) {
   for (const auto &ModulePtr : State.Modules) {
     for (Function &F : *ModulePtr) {
       if (shouldSkipFunction(F))
+        continue;
+      if (isIgnoredPath(getModulePath(&F, State)))
         continue;
       if (isAllocatorImplementationFunction(F.getName()))
         continue;
@@ -771,20 +1403,31 @@ void collectAllocationSources(AnalysisState &State) {
           continue;
 
         std::string Kind;
-        if (!isAllocatorName(Callee->getName(), Kind))
+        bool IsSource = false;
+        if (isAllocatorName(Callee->getName(), Kind)) {
+          if (Callee->getName().startswith("__") &&
+              isPreferredOuterAllocatorWrapper(F.getName()))
+            continue;
+          if (allocatorIsNoFail(*CB, Callee->getName(), State))
+            continue;
+          IsSource = true;
+        } else if (State.MayReturnNullFunctions.count(Callee)) {
+          Kind = Callee->getName().str();
+          IsSource = true;
+        }
+        if (!IsSource)
           continue;
-        if (Callee->getName().startswith("__") &&
-            isPreferredOuterAllocatorWrapper(F.getName()))
+        if (isIgnoredSourceKind(Kind))
           continue;
-        if (allocatorIsNoFail(*CB, Callee->getName(), State.Callers))
+        if (isIgnoredPath(formatDebugLoc(&I)))
           continue;
         if (hasNullComparisonInValueFlow(CB, &State.Callers))
           continue;
 
         Source Src;
-        Src.AllocSite = &I;
-        Src.AllocFunction = &F;
-        Src.AllocKind = Kind;
+        Src.SourceSite = &I;
+        Src.SourceFunction = &F;
+        Src.SourceKind = Kind;
         State.Sources.push_back(std::move(Src));
       }
     }
@@ -803,8 +1446,8 @@ void analyzeSources(AnalysisState &State) {
     size_t Visits = 0;
 
     WorkItem Seed;
-    Seed.Tracked = Src.AllocSite;
-    Seed.Context = Src.AllocFunction;
+    Seed.Tracked = Src.SourceSite;
+    Seed.Context = Src.SourceFunction;
     Queue.push_back(std::move(Seed));
 
     while (!Queue.empty() && Visits < MaxVisitsPerSource) {
@@ -846,7 +1489,10 @@ void analyzeSources(AnalysisState &State) {
           continue;
 
         std::string SinkKind;
-        if (isPointerDerefSink(Tracked, *UserI, SinkKind) &&
+        const Value *DerefValue = nullptr;
+        if (isPointerDerefSink(Tracked, *UserI, SinkKind, DerefValue) &&
+            !isDefinitelyNonnullValueAt(DerefValue ? DerefValue : Tracked, UserI,
+                                        DT) &&
             !isValueNonnullAtInstruction(Tracked, UserI, DT)) {
           Report R;
           R.Src = &Src;
@@ -927,9 +1573,9 @@ void analyzeSources(AnalysisState &State) {
   logPhase("post-processing reports: sorting");
   std::sort(State.Reports.begin(), State.Reports.end(),
             [](const Report &A, const Report &B) {
-              auto AK = std::make_tuple(formatDebugLoc(A.Src->AllocSite),
+              auto AK = std::make_tuple(formatDebugLoc(A.Src->SourceSite),
                                         formatDebugLoc(A.Sink), A.SinkKind);
-              auto BK = std::make_tuple(formatDebugLoc(B.Src->AllocSite),
+              auto BK = std::make_tuple(formatDebugLoc(B.Src->SourceSite),
                                         formatDebugLoc(B.Sink), B.SinkKind);
               return AK < BK;
             });
@@ -939,11 +1585,11 @@ void writeReports(const AnalysisState &State, raw_ostream &OS) {
   OS << "malloc-checker reports: " << State.Reports.size() << "\n";
   for (size_t I = 0; I < State.Reports.size(); ++I) {
     const Report &R = State.Reports[I];
-    OS << "\n[" << (I + 1) << "] unchecked allocation use\n";
-    OS << "  alloc-kind: " << R.Src->AllocKind << "\n";
-    OS << "  alloc-func: " << functionNameOrUnknown(R.Src->AllocFunction)
+    OS << "\n[" << (I + 1) << "] unchecked nullable return use\n";
+    OS << "  source-kind: " << R.Src->SourceKind << "\n";
+    OS << "  source-func: " << functionNameOrUnknown(R.Src->SourceFunction)
        << "\n";
-    OS << "  alloc-loc:  " << formatDebugLoc(R.Src->AllocSite) << "\n";
+    OS << "  source-loc:  " << formatDebugLoc(R.Src->SourceSite) << "\n";
     OS << "  sink-func:  " << functionNameOrUnknown(R.SinkFunction) << "\n";
     OS << "  sink-kind:  " << R.SinkKind << "\n";
     OS << "  sink-loc:   " << formatDebugLoc(R.Sink) << "\n";
