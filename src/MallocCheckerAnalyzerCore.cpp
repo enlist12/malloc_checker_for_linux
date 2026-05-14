@@ -449,22 +449,75 @@ static bool matchNonnullCondition(const Value *Cond, const Value *Target,
       }
     }
   }
+  if (auto *SI = dyn_cast<SelectInst>(Cond)) {
+    // select i1 A, i1 B, i1 false  ->  A && B
+    // select i1 A, i1 true, i1 B   ->  A || B
+    if (SI->getCondition()->getType()->isIntegerTy(1)) {
+      bool CondTrueMeansNonnull = false;
+      bool ValTrueMeansNonnull = false;
+      bool CondMatch = matchNonnullCondition(SI->getCondition(), Target,
+                                             CondTrueMeansNonnull);
+      bool ValMatch = matchNonnullCondition(SI->getTrueValue(), Target,
+                                            ValTrueMeansNonnull);
+      if (isNullConstant(SI->getFalseValue())) {
+        // AND: on true branch, both condition AND true-value hold
+        if (CondMatch && ValMatch && CondTrueMeansNonnull && ValTrueMeansNonnull) {
+          TrueMeansNonnull = true;
+          return true;
+        }
+        if ((CondMatch && CondTrueMeansNonnull) ||
+            (ValMatch && ValTrueMeansNonnull)) {
+          TrueMeansNonnull = true;
+          return true;
+        }
+      }
+      if (auto *C = dyn_cast<ConstantInt>(SI->getTrueValue())) {
+        if (C->isOne()) {
+          // OR: on false branch, both condition AND false-value are false
+          bool FalseTrueMeansNonnull = false;
+          bool FalseMatch = matchNonnullCondition(
+              SI->getFalseValue(), Target, FalseTrueMeansNonnull);
+          if (CondMatch && FalseMatch && !CondTrueMeansNonnull &&
+              !FalseTrueMeansNonnull) {
+            TrueMeansNonnull = false;
+            return true;
+          }
+          if ((CondMatch && !CondTrueMeansNonnull) ||
+              (FalseMatch && !FalseTrueMeansNonnull)) {
+            TrueMeansNonnull = false;
+            return true;
+          }
+        }
+      }
+    }
+  }
+
   if (auto *BO = dyn_cast<BinaryOperator>(Cond)) {
     bool LTrueMeansNonnull = false;
     bool RTrueMeansNonnull = false;
-    if (BO->getOpcode() == Instruction::And &&
-        matchNonnullCondition(BO->getOperand(0), Target, LTrueMeansNonnull) &&
-        matchNonnullCondition(BO->getOperand(1), Target, RTrueMeansNonnull) &&
-        LTrueMeansNonnull && RTrueMeansNonnull) {
-      TrueMeansNonnull = true;
-      return true;
+    bool LMatch =
+        matchNonnullCondition(BO->getOperand(0), Target, LTrueMeansNonnull);
+    bool RMatch =
+        matchNonnullCondition(BO->getOperand(1), Target, RTrueMeansNonnull);
+    if (BO->getOpcode() == Instruction::And) {
+      if (LMatch && RMatch && LTrueMeansNonnull && RTrueMeansNonnull) {
+        TrueMeansNonnull = true;
+        return true;
+      }
+      if ((LMatch && LTrueMeansNonnull) || (RMatch && RTrueMeansNonnull)) {
+        TrueMeansNonnull = true;
+        return true;
+      }
     }
-    if (BO->getOpcode() == Instruction::Or &&
-        matchNonnullCondition(BO->getOperand(0), Target, LTrueMeansNonnull) &&
-        matchNonnullCondition(BO->getOperand(1), Target, RTrueMeansNonnull) &&
-        !LTrueMeansNonnull && !RTrueMeansNonnull) {
-      TrueMeansNonnull = false;
-      return true;
+    if (BO->getOpcode() == Instruction::Or) {
+      if (LMatch && RMatch && !LTrueMeansNonnull && !RTrueMeansNonnull) {
+        TrueMeansNonnull = false;
+        return true;
+      }
+      if ((LMatch && !LTrueMeansNonnull) || (RMatch && !RTrueMeansNonnull)) {
+        TrueMeansNonnull = false;
+        return true;
+      }
     }
   }
 
@@ -663,6 +716,8 @@ static bool isAllocatorName(StringRef Name, std::string &Kind) {
       {"__vmalloc", "__vmalloc"},
       {"__kvmalloc", "__kvmalloc"},
       {"__krealloc", "__krealloc"},
+      {"__kmalloc_noprof", "__kmalloc"},
+      {"__kmalloc_large_noprof", "__kmalloc"},
       {"__kmalloc_cache_noprof", "__kmalloc"},
       {"kmalloc_noprof", "__kmalloc"},
       {"kmalloc_node_noprof", "__kmalloc"},
@@ -1213,11 +1268,12 @@ static bool valueMayBeNullFromReturns(
     Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
     if (Callee) {
       std::string Kind;
-      if (isAllocatorName(Callee->getName(), Kind) &&
-          !allocatorIsNoFail(*CB, Callee->getName(), State))
+      if (isAllocatorName(Callee->getName(), Kind)) {
+        if (!allocatorIsNoFail(*CB, Callee->getName(), State))
+          return true;
+      } else if (State.MayReturnNullFunctions.count(Callee)) {
         return true;
-      if (State.MayReturnNullFunctions.count(Callee))
-        return true;
+      }
     }
     return false;
   }

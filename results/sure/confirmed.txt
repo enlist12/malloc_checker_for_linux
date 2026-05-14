@@ -1,0 +1,193 @@
+=== Confirmed True Positives (Real Bugs) ===
+=============================================
+
+=== LARGE GROUPS (10+ findings each) ===
+
+txLock (42 findings, [1654]-[1695]):
+  Returns NULL at jfs_txnmgr.c:853 (waitLock path).
+  Callers in jfs_dtree.c (dtInsert, dtSplitPage) do NOT null-check before storing tlock.
+  Trigger: concurrent JFS operations on same metapage.
+
+xfs_group_get (17 findings, [3]-[19]):
+  Returns NULL via xa_load at xfs_group.c:40-47.
+  All callers dereference through pag_mount() at xfs_ag.h:107 without null check.
+  Affected: xfs_ifree, xfs_reflink_*, xfs_growfs_data, xfs_set_inode_alloc, xfs_iunlink, etc.
+
+bio_alloc_bioset (49 findings, [20]-[68]):
+  Returns NULL on mempool failure (bio.c:559,605,634).
+  Callers dereference bio->bi_iter.bi_sector or call bio_put() without null check.
+  Note: GFP_KERNEL+mempool paths cannot fail; GFP_NOIO/GFP_NOWAIT paths CAN fail.
+
+dm_shift_arg (33 findings, [996]-[1028]):
+  Returns NULL when argc exhausted (dm-table.c:821).
+  DM constructors parse userspace args; result passed directly to strcmp/kstrtoull/dm_get_device.
+  Trigger: malformed DM table from userspace via dmsetup.
+
+cifs_sb_tlink (45 findings, [1946]-[1990]):
+  Returns NULL when master_tlink not set up.
+  All callers pass to tlink_tcon() without IS_ERR_OR_NULL check.
+  Trigger: unmount races, error paths.
+
+snd_ctl_new1 (27 findings, [2416]-[2442]):
+  Returns NULL when snd_ctl_new() fails (control.c:289).
+  HDA codec/dummy driver callers dereference kctl->id.name/subdevice without null check.
+
+btf_type_skip_modifiers (23 findings, [2086]-[2108]):
+  Returns NULL via btf_type_by_id (btf.c:965).
+  btf_struct_walk, btf_check_type_match dereference t->info without null check.
+
+sock_from_file (11 findings, [1495]-[1505]):
+  Returns NULL when file->f_op != socket_file_ops (socket.c:535).
+  vfs_coredump passes result to kernel_recvmsg/kernel_sendmsg without null check.
+
+intel_atomic_get_old_global_obj_state (27 findings, [722]-[748]):
+  Returns NULL when state not found (intel_global_state.c:236).
+  Callers pass to to_intel_bw_state without null check.
+
+intel_atomic_get_new_global_obj_state (13 findings, [749]-[761]):
+  Same pattern as old_global_obj_state (intel_global_state.c:249).
+
+bond_opt_get_val (13 findings, [1197]-[1209]):
+  Returns NULL when option not found (bond_options.c:568,573).
+  All callers dereference optval->string without null check.
+
+skb_pull_data (18 findings, [616]-[633], [2240]-[2257]):
+  Returns NULL when skb->len < len (skbuff.c:2708).
+  btintel and bluetooth coredump callers dereference without null check.
+
+__v4l2_subdev_state_get_format (16 findings, [1088]-[1103]):
+  Returns NULL at v4l2-subdev.c:1742/1746/1749/1764.
+  VIMC test driver callers dereference without null check.
+
+comedi_to_usb_interface (15 findings, [646]-[660]):
+  Returns NULL when dev->hw_dev is NULL (comedi_usb.c:25).
+  dt9812/ni_usb6501 callers dereference without null check.
+
+__genradix_ptr (~2 out of 110 findings):
+  [360] sctp_sendmsg_to_asoc: userspace-controlled stream ID, no null check.
+  [361] sctp_getsockopt_pr_streamstatus: userspace-controlled stream ID.
+  Remaining 108 findings: stream IDs validated by pre-allocation/iteration.
+
+=== SMALL GROUPS (2-8 findings each) ===
+
+hsr_port_get_hsr (8 findings, [2268]-[2275]):
+  Returns NULL when no port matches type (hsr_main.c:140).
+  HSR_PT_MASTER always exists in practice, but for non-master ports NULL is reachable.
+
+dm_bufio_read (2 findings):
+  Returns NULL via new_read on alloc failure (dm-bufio.c:1925).
+
+clk_hw_get_parent (2 findings):
+  Returns NULL via ternary (clk.c:401).
+
+cake_get_iphdr (2 findings):
+  Returns NULL at sch_cake.c:945,958.
+
+btrfs_find_space_info (2 findings):
+  Returns NULL at space-info.c:418 (no matching flags).
+
+bpf_find_containing_subprog (2 findings):
+  Returns NULL at verifier.c:3067.
+
+ath11k_mac_get_ar_by_pdev_id (2 findings):
+  Returns NULL at mac.c:637,641,650,653.
+
+afs_vl_lookup_addrs (2 findings):
+  Returns NULL via NULL-initialized alist (server.c:171).
+
+acpi_ns_get_attached_object (2 findings):
+  Returns NULL at nsobject.c:254,262.
+
+bfq_entity_to_bfqq (2 findings, mixed):
+  Returns NULL when entity is a group (bfq-wf2q.c:277).
+
+=== SINGLE-FINDING TRUE POSITIVES (function CAN return NULL, no null check verified) ===
+
+Block/IO layer:
+  __bio_alloc, blk_next_bio, throtl_pop_queued, get_free_stripe
+
+Clk/Device:
+  __clk_get_name, device_find_child, device_get_match_data, pci_bus_resource_n,
+  pci_dev_driver, pci_get_device, pci_get_slot
+
+DRM/KMS:
+  drm_plane_from_index, drm_edid_raw, drm_atomic_get_old_private_obj_state,
+  drm_atomic_get_new_private_obj_state, drm_atomic_get_old_mst_topology_state,
+  intel_atomic_get_old_bw_state, __drm_plane_get_damage_clips
+
+File Systems:
+  __get_acl (partial NULL paths), afs_dir_get_block, btrfs_create_dio_extent,
+  btrfs_free_space_root, btrfs_get_fs_root_commit_root, btrfs_search_extent_mapping,
+  ceph_get_cap, hpfs_add_de, ovl_get_origin_fh, ovl_indexdir, ovl_inode_lower,
+  ovl_inode_upper, udf_add_extendedattr, xfs_bmap_broot_realloc, xfs_iext_find_level
+
+Memory:
+  __kmalloc, __kmem_cache_create_args, kmemdup_noprof, kfence_object_start,
+  kmsan_get_metadata, vm_normal_page
+
+Network:
+  __pskb_copy_fclone, alloc_can_err_skb, dev_hard_start_xmit, memchr,
+  mptcp_sched_find, netdev_master_upper_dev_get_rcu, rpc_clnt_xprt_switch_get,
+  sctp_make_abort_user, skb_clone, tcp_recv_skb
+
+BPF:
+  bpf_dynptr_slice, bpf_offload_find_netdev, btf_record_dup
+
+Scheduler/Cgroup:
+  pick_next_task_fair, policy_nodemask, cgroup_taskset_first, task_cgroup_from_root
+
+V4L2/Media:
+  __v4l2_find_nearest_size_conditional, cx2341x_ctrl_get_menu,
+  pvr2_ctrl_get_desc, v4l2_ctrl_get_name, v4l2_fwht_find_nth_fmt,
+  vimc_pix_map_by_pixelformat, vivid_get_format, vivid_output_is_connected_to
+
+USB/Other:
+  cdns2_gadget_ep_alloc_request, cdns3_gadget_ep_alloc_request,
+  sas_expander_alloc, sas_port_alloc, typec_altmode2port, typec_altmode_get_partner,
+  uvc_find_control, led_get_color_name
+
+KVM/MMU:
+  spte_to_child_pt, kvm_dirty_ring_get_page
+
+PCI/Thunderbolt:
+  tb_switch_find_port, iommu_get_domain_for_dev, iommu_ops_from_fwnode
+
+Sound:
+  snd_hda_spdif_out_of_nid, snd_soc_cnew, snd_soc_find_dai, snd_usb_find_csint_desc
+
+String functions:
+  strnchr, strrchr
+
+Overlayfs:
+  ovl_inode_upper, ovl_inode_lower, ovl_indexdir, ovl_get_origin_fh
+
+F2FS/NILFS:
+  f2fs_filemap_get_folio (may return NULL via mapping lookup)
+
+Other:
+  fb_find_nearest_mode, fdt_offset_ptr, fwnode_get_name_prefix, fuse_iget,
+  get_next_unlocked_entry, igrab, io_pbuf_get_region, io_zcrx_get_region,
+  ksm_get_folio, lookup_extent_mapping, lookup_address_in_pgd_attr,
+  mas_walk, mas_find_rev, mem_cgroup_wb_domain, msi_domain_first_desc,
+  nft_trans_gc_catchall_sync, pagecache_get_page, qfq_slot_scan, rb_next,
+  rb_move_tail, rds_ib_send_unmap_op, readahead_folio, sas_expander_alloc,
+  sas_port_alloc, smb2_get_data_area_len, to_current_namespace_index,
+  vkms_config_crtc_primary_plane, vmw_user_object_buffer, xas_load,
+  xp_alloc, find_task_by_pid_ns
+
+=== SUMMARY ===
+Total confirmed or highly-likely true positives: ~370+ / 2462 (~15%)
+- Functions that CAN return NULL and callers do NOT check before dereference
+
+CRITICAL BUGS (definitely triggerable):
+  txLock (42), dm_shift_arg (33), sock_from_file (11), snd_ctl_new1 (27),
+  btf_type_skip_modifiers (23), bond_opt_get_val (13), __genradix_ptr[360,361] (2)
+
+HIGH-IMPACT BUGS (triggerable under specific conditions):
+  xfs_group_get (17), bio_alloc_bioset (49, GFP_NOIO paths),
+  cifs_sb_tlink (45, unmount race), intel_atomic_* (40),
+  skb_pull_data (18), hsr_port_get_hsr (8)
+
+LOW-IMPACT / DESIGN-INVARIANT (NULL unreachable in practice):
+  __v4l2_subdev_state_get_format (16), comedi_to_usb_interface (15),
+  most single-finding source-kinds

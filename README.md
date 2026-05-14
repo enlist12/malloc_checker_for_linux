@@ -85,6 +85,10 @@ p->field = 1;
 
 只要最终可回溯到 `__GFP_NOFAIL`，就会被视为不可失败分配并跳过。
 
+更重要的是：即使底层分配函数（如 `kmem_cache_alloc_noprof`）本身被分析判定为“可能返回 NULL”（因为它在其他调用点的确可能返回 NULL），只要当前调用点传入了 `__GFP_NOFAIL`，该调用点的返回值仍会被视作“不可能为 NULL”。这解决了如 `xlog_ticket_alloc`、`xfs_cui_init` 这类包装函数因调用 NOFAIL 分配仍被误报的问题。
+
+另外补全了 `__kmalloc_noprof`、`__kmalloc_large_noprof` 等 `noprof` 变体的白名单识别，避免这些调用退化为普通 may-return-null 函数源。
+
 5. 若干内部已封装错误语义的 API 家族被整体排除。
 
 当前默认不检查：
@@ -113,6 +117,15 @@ p->field = 1;
 - `free_percpu`
 
 这样可以避免把 `kfree(NULL)` 之类合法路径一路追进 `slub` 调试代码，再在 `memchr_inv`、`check_object` 之类内部函数上产生假阳性。
+
+8. 增强了 null-check 条件匹配的覆盖面。
+
+现在可以识别 LLVM IR 中以 `select` 指令表达的短路求值模式：
+
+- `select i1 A, i1 B, i1 false` → `A && B`
+- `select i1 A, i1 true, i1 B`  → `A || B`
+
+同时放宽了 `and`/`or` 组合条件的匹配规则：当多变量联立检查（如 `!name || !child`）时，只要其中一个操作数涉及目标值，就能正确推导出目标在安全分支上非 NULL。这解决了 `allocate_partition` 这类“在联合条件中保护了返回值”的场景被误报的问题。
 
 ## 检测目标
 
@@ -143,6 +156,11 @@ p->field = 1;
 - `kzalloc_obj`
 - `kmem_cache_alloc_node`
 - `kmalloc_noprof`
+- `kzalloc_noprof`
+- `kmem_cache_alloc_noprof`
+- `__kmalloc_noprof`
+- `__kmalloc_large_noprof`
+- `__kmalloc_cache_noprof`
 - `__kmalloc_node_track_caller_noprof`
 
 而像 `vmalloc_to_page` 这类虽然名字前缀看起来像 allocator、但实际不是 allocator 的函数，不会被误识别成 source。
@@ -351,10 +369,10 @@ make irdumper
 报告示例：
 
 ```text
-[1] unchecked allocation use
-  alloc-kind: kmalloc
-  alloc-func: foo
-  alloc-loc:  fs/x.c:10
+[1] unchecked nullable return use
+  source-kind: kmalloc
+  source-func: foo
+  source-loc:  fs/x.c:10
   sink-func:  bar
   sink-kind:  store
   sink-loc:   fs/y.c:42
@@ -364,9 +382,9 @@ make irdumper
 
 字段含义：
 
-- `alloc-kind`: 识别到的分配函数类别
-- `alloc-func`: 分配发生的函数
-- `alloc-loc`: 分配点源码位置
+- `source-kind`: 识别到的分配函数类别（或 may-return-null 函数名）
+- `source-func`: 分配发生的函数
+- `source-loc`: 分配点源码位置
 - `sink-func`: sink 所在函数
 - `sink-kind`: sink 类型
 - `sink-loc`: sink 源码位置
