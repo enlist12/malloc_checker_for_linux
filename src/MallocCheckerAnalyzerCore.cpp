@@ -1638,7 +1638,7 @@ void analyzeSources(AnalysisState &State) {
 }
 
 void writeReports(const AnalysisState &State, raw_ostream &OS) {
-  OS << "malloc-checker reports: " << State.Reports.size() << "\n";
+  OS << "null-ptr-checker reports: " << State.Reports.size() << "\n";
   for (size_t I = 0; I < State.Reports.size(); ++I) {
     const Report &R = State.Reports[I];
     OS << "\n[" << (I + 1) << "] unchecked nullable return use\n";

@@ -25,5 +25,5 @@ clang++-15 \
   -std=c++17 \
   -O2 \
   -g \
-  -o "${BUILD_DIR}/malloc-checker-analyzer" \
+  -o "${BUILD_DIR}/null-ptr-checker" \
   $("$LLVM_CONFIG" --cxxflags --ldflags --libs core irreader support analysis)

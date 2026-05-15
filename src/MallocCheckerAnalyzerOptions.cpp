@@ -102,7 +102,7 @@ std::unique_ptr<raw_ostream> createOutputStream(std::string &Error) {
 
 void logPhase(const std::string &Message) {
   if (ShowProgress)
-    errs() << "[malloc-checker] " << Message << "\n";
+    errs() << "[null-ptr-checker] " << Message << "\n";
 }
 
 void logProgress(const std::string &Phase, size_t Current, size_t Total) {
@@ -110,7 +110,7 @@ void logProgress(const std::string &Phase, size_t Current, size_t Total) {
     return;
   if (Current != Total && (Current % ProgressInterval) != 0)
     return;
-  errs() << "[malloc-checker] " << Phase << " " << Current << "/" << Total
+  errs() << "[null-ptr-checker] " << Phase << " " << Current << "/" << Total
          << "\n";
 }
 

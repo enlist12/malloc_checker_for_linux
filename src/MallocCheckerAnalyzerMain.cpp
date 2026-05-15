@@ -8,7 +8,7 @@ using namespace llvm;
 int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(
-      argc, argv, "linux nullable return unchecked-use analyzer\n");
+      argc, argv, "null-ptr-checker: detect unchecked nullable pointer uses\n");
 
   std::string Error;
   std::vector<std::string> Paths = mallocchecker::collectInputPaths(Error);
