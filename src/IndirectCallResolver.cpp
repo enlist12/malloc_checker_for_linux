@@ -838,18 +838,12 @@ bool findCalleesWithMLTA(CallInst *CI, FuncSet &FS, AnalysisState &State) {
 }
 
 FuncSet resolveIndirectCall(CallBase *CB, AnalysisState &State) {
-  if (State.HasOpaquePointers) {
-    // MLTA type analysis requires typed pointers. Fall back to signature
-    // matching for opaque-pointer IR.
-    FuncSet Result;
-    size_t CH = callHash(CB);
-    auto It = State.SigFuncsMap.find(CH);
-    if (It != State.SigFuncsMap.end())
-      Result = It->second;
-    if (Result.size() > MAX_ICALLEE_TARGETS)
-      Result.clear();
-    return Result;
-  }
+  // MLTA type analysis requires typed pointers. Signature-only matching
+  // produces massive false positives (matching unrelated functions across
+  // subsystems), so we conservatively return empty when opaque pointers
+  // are in use.
+  if (State.HasOpaquePointers)
+    return {};
 
   FuncSet Result;
 
