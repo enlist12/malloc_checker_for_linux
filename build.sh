@@ -22,6 +22,7 @@ clang++-15 \
   "${SRC_DIR}/MallocCheckerAnalyzerMain.cpp" \
   "${SRC_DIR}/MallocCheckerAnalyzerOptions.cpp" \
   "${SRC_DIR}/MallocCheckerAnalyzerCore.cpp" \
+  "${SRC_DIR}/IndirectCallResolver.cpp" \
   -std=c++17 \
   -O2 \
   -g \

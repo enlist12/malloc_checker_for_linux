@@ -1,6 +1,8 @@
 #ifndef MALLOC_CHECKER_ANALYZER_H
 #define MALLOC_CHECKER_ANALYZER_H
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
@@ -8,10 +10,13 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace llvm {
@@ -53,6 +58,25 @@ struct AnalysisState {
   std::unordered_set<llvm::Function *> MayReturnNullFunctions;
   std::vector<Source> Sources;
   std::vector<Report> Reports;
+
+  // Indicates modules use opaque pointers (MLTA type analysis not supported).
+  bool HasOpaquePointers = false;
+
+  // --- Indirect call resolution (MLTA) ---
+  std::unordered_map<const llvm::CallBase *,
+                     llvm::SmallPtrSet<llvm::Function *, 8>>
+      IndirectCallees;
+  llvm::SmallPtrSet<llvm::Function *, 16> AddressTakenFuncs;
+  llvm::DenseMap<size_t, llvm::SmallPtrSet<llvm::Function *, 8>> SigFuncsMap;
+  llvm::DenseMap<size_t, std::map<int, llvm::SmallPtrSet<llvm::Function *, 8>>>
+      TypeIdxFuncsMap;
+  llvm::DenseMap<size_t, std::map<int, std::set<std::pair<size_t, int>>>>
+      TypeIdxPropMap;
+  std::set<size_t> TypeEscapeSet;
+  std::set<size_t> TypeCapSet;
+  llvm::SmallPtrSet<llvm::Function *, 8> StoredFuncs;
+  std::map<uint64_t, llvm::Function *> GlobalFuncMap;
+
 };
 
 extern llvm::cl::list<std::string> InputFilenames;
@@ -73,6 +97,7 @@ std::string formatValue(const llvm::Value *V);
 
 bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
                  std::string &Error);
+void buildMLTAData(AnalysisState &State);
 void buildCallers(AnalysisState &State);
 void collectPanicSlabCaches(AnalysisState &State);
 void computeMayReturnNullFunctions(AnalysisState &State);

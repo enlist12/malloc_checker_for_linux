@@ -19,33 +19,36 @@ int main(int argc, char **argv) {
 
   mallocchecker::AnalysisState State;
 
-  mallocchecker::logPhase("phase 1/4 loading modules");
+  mallocchecker::logPhase("phase 1/8 loading modules");
   if (!mallocchecker::loadModules(Paths, State, Error)) {
     errs() << Error << "\n";
     return 1;
   }
 
-  mallocchecker::logPhase("phase 2/5 building direct-call index");
+  mallocchecker::logPhase("phase 2/8 building MLTA indirect-call data");
+  mallocchecker::buildMLTAData(State);
+
+  mallocchecker::logPhase("phase 3/8 building call index");
   mallocchecker::buildCallers(State);
 
-  mallocchecker::logPhase("phase 3/6 collecting panic slab caches");
+  mallocchecker::logPhase("phase 4/8 collecting panic slab caches");
   mallocchecker::collectPanicSlabCaches(State);
   mallocchecker::logPhase("found " +
                           std::to_string(State.PanicSlabCaches.size()) +
                           " panic slab caches");
 
-  mallocchecker::logPhase("phase 4/6 computing may-return-null functions");
+  mallocchecker::logPhase("phase 5/8 computing may-return-null functions");
   mallocchecker::computeMayReturnNullFunctions(State);
   mallocchecker::logPhase(
       "found " + std::to_string(State.MayReturnNullFunctions.size()) +
       " may-return-null functions");
 
-  mallocchecker::logPhase("phase 5/6 collecting nullable-return sources");
+  mallocchecker::logPhase("phase 6/8 collecting nullable-return sources");
   mallocchecker::collectSources(State);
   mallocchecker::logPhase("found " + std::to_string(State.Sources.size()) +
                           " nullable-return sources");
 
-  mallocchecker::logPhase("phase 6/6 tracking unchecked dereferences");
+  mallocchecker::logPhase("phase 7/8 tracking unchecked dereferences");
   mallocchecker::analyzeSources(State);
 
   std::unique_ptr<raw_ostream> OS = mallocchecker::createOutputStream(Error);

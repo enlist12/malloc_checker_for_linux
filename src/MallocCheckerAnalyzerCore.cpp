@@ -1,4 +1,5 @@
 #include "MallocCheckerAnalyzer.h"
+#include "IndirectCallResolver.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -1274,6 +1275,21 @@ static bool valueMayBeNullFromReturns(
       } else if (State.MayReturnNullFunctions.count(Callee)) {
         return true;
       }
+      return false;
+    }
+
+    // Handle indirect calls via MLTA-resolved targets.
+    if (CB->isIndirectCall()) {
+      auto It = State.IndirectCallees.find(CB);
+      if (It != State.IndirectCallees.end()) {
+        for (Function *Target : It->second) {
+          std::string Kind;
+          if (isAllocatorName(Target->getName(), Kind))
+            return true;
+          if (State.MayReturnNullFunctions.count(Target))
+            return true;
+        }
+      }
     }
     return false;
   }
@@ -1324,6 +1340,18 @@ bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
     if (!M) {
       Error = "failed to load '" + Path + "'";
       return false;
+    }
+
+    // Detect opaque pointers for MLTA compatibility.
+    for (Function &F : *M) {
+      if (F.getReturnType()->isOpaquePointerTy()) {
+        State.HasOpaquePointers = true;
+      }
+      for (const Argument &A : F.args()) {
+        if (A.getType()->isOpaquePointerTy()) {
+          State.HasOpaquePointers = true;
+        }
+      }
     }
 
     for (Function &F : *M) {
@@ -1391,12 +1419,25 @@ void buildCallers(AnalysisState &State) {
         continue;
       for (Instruction &I : instructions(F)) {
         auto *CB = dyn_cast<CallBase>(&I);
-        if (!CB || CB->isIndirectCall())
+        if (!CB)
           continue;
-        Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
-        if (!Callee || Callee->isDeclaration())
-          continue;
-        State.Callers[Callee].push_back(CB);
+
+        if (CB->isIndirectCall()) {
+          FuncSet Targets = resolveIndirectCall(CB, State);
+          if (!Targets.empty()) {
+            State.IndirectCallees[CB] = Targets;
+            for (Function *Target : Targets) {
+              if (!Target->isDeclaration())
+                State.Callers[Target].push_back(CB);
+            }
+          }
+        } else {
+          Function *Callee =
+              resolveDirectCallee(CB->getCalledFunction(), State);
+          if (!Callee || Callee->isDeclaration())
+            continue;
+          State.Callers[Callee].push_back(CB);
+        }
       }
     }
   }
@@ -1455,21 +1496,37 @@ void collectSources(AnalysisState &State) {
           continue;
 
         Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
-        if (!Callee)
-          continue;
 
         std::string Kind;
         bool IsSource = false;
-        if (isAllocatorName(Callee->getName(), Kind)) {
-          if (Callee->getName().startswith("__") &&
-              isPreferredOuterAllocatorWrapper(F.getName()))
-            continue;
-          if (allocatorIsNoFail(*CB, Callee->getName(), State))
-            continue;
-          IsSource = true;
-        } else if (State.MayReturnNullFunctions.count(Callee)) {
-          Kind = Callee->getName().str();
-          IsSource = true;
+        if (Callee) {
+          if (isAllocatorName(Callee->getName(), Kind)) {
+            if (Callee->getName().startswith("__") &&
+                isPreferredOuterAllocatorWrapper(F.getName()))
+              continue;
+            if (allocatorIsNoFail(*CB, Callee->getName(), State))
+              continue;
+            IsSource = true;
+          } else if (State.MayReturnNullFunctions.count(Callee)) {
+            Kind = Callee->getName().str();
+            IsSource = true;
+          }
+        } else if (CB->isIndirectCall()) {
+          // Resolve indirect call targets and check each.
+          auto It = State.IndirectCallees.find(CB);
+          if (It != State.IndirectCallees.end()) {
+            for (Function *Target : It->second) {
+              if (isAllocatorName(Target->getName(), Kind)) {
+                IsSource = true;
+                break;
+              }
+              if (State.MayReturnNullFunctions.count(Target)) {
+                Kind = Target->getName().str();
+                IsSource = true;
+                break;
+              }
+            }
+          }
         }
         if (!IsSource)
           continue;
@@ -1492,6 +1549,9 @@ void collectSources(AnalysisState &State) {
 
 void analyzeSources(AnalysisState &State) {
   LocalCaches Caches;
+  std::unordered_map<StructFieldKey, std::vector<StructFieldInfo>,
+                     StructFieldKeyHash>
+      StructFieldStores;
 
   for (size_t SrcIdx = 0; SrcIdx < State.Sources.size(); ++SrcIdx) {
     logProgress("analyzing sources", SrcIdx + 1, State.Sources.size());
@@ -1516,10 +1576,11 @@ void analyzeSources(AnalysisState &State) {
       ++Visits;
 
       if (Item.IsMemory) {
-        const AllocaInst *Slot = asTrackedStackSlot(Item.Tracked);
+        const AllocaInst *Slot = asTrackedStackSlot(
+            Item.Tracked->stripPointerCasts());
         if (!Slot)
           continue;
-        for (const User *U : Item.Tracked->users()) {
+        for (const User *U : Slot->users()) {
           auto *LI = dyn_cast<LoadInst>(U);
           if (!LI)
             continue;
@@ -1564,16 +1625,84 @@ void analyzeSources(AnalysisState &State) {
             isa<SelectInst>(UserI) || isa<FreezeInst>(UserI)) {
           Queue.push_back(WorkItem{UserI, Context, false, Item.Depth,
                                    Item.CallChain});
+
+          // If this is a GEP, check for matching struct field loads.
+          if (const auto *GEP = dyn_cast<GetElementPtrInst>(UserI)) {
+            if (GEP->getNumIndices() >= 2) {
+              const auto *Idx0 =
+                  dyn_cast<ConstantInt>(GEP->getOperand(1));
+              const auto *Idx1 =
+                  dyn_cast<ConstantInt>(GEP->getOperand(2));
+              if (Idx0 && Idx0->isZero() && Idx1) {
+                const Value *BasePtr =
+                    GEP->getPointerOperand()->stripPointerCasts();
+                StructFieldKey Key;
+                Key.BasePtr = BasePtr;
+                Key.Indices.push_back(
+                    static_cast<int>(Idx1->getZExtValue()));
+                for (unsigned IdxI = 3; IdxI < GEP->getNumIndices();
+                     ++IdxI) {
+                  if (auto *CI = dyn_cast<ConstantInt>(
+                          GEP->getOperand(IdxI)))
+                    Key.Indices.push_back(
+                        static_cast<int>(CI->getZExtValue()));
+                  else
+                    break;
+                }
+                auto Fit = StructFieldStores.find(Key);
+                if (Fit != StructFieldStores.end()) {
+                  for (auto &FI : Fit->second) {
+                    Queue.push_back(
+                        WorkItem{FI.StoredValue, Context, false,
+                                 Item.Depth, Item.CallChain});
+                  }
+                }
+              }
+            }
+          }
           continue;
         }
 
         if (auto *SI = dyn_cast<StoreInst>(UserI)) {
           if (sameTrackedValue(SI->getValueOperand(), Tracked)) {
-            const AllocaInst *Slot =
-                asTrackedStackSlot(SI->getPointerOperand());
-            if (Slot) {
+            const Value *StorePtr =
+                SI->getPointerOperand()->stripPointerCasts();
+            // Case 1: Store to alloca (existing).
+            if (const AllocaInst *Slot = asTrackedStackSlot(StorePtr)) {
               Queue.push_back(
                   WorkItem{Slot, Context, true, Item.Depth, Item.CallChain});
+            } else {
+              // Case 2: Store to struct field via GEP — record for later
+              // load lookup.
+              if (const auto *GEP = dyn_cast<GetElementPtrInst>(StorePtr)) {
+                if (GEP->getNumIndices() >= 2) {
+                  const auto *Idx0 =
+                      dyn_cast<ConstantInt>(GEP->getOperand(1));
+                  const auto *Idx1 =
+                      dyn_cast<ConstantInt>(GEP->getOperand(2));
+                  if (Idx0 && Idx0->isZero() && Idx1) {
+                    const Value *BasePtr =
+                        GEP->getPointerOperand()->stripPointerCasts();
+                    int FieldIdx =
+                        static_cast<int>(Idx1->getZExtValue());
+
+                    StructFieldKey Key;
+                    Key.BasePtr = BasePtr;
+                    Key.Indices.push_back(FieldIdx);
+                    for (unsigned IdxI = 3;
+                         IdxI < GEP->getNumIndices(); ++IdxI) {
+                      if (auto *CI =
+                              dyn_cast<ConstantInt>(GEP->getOperand(IdxI)))
+                        Key.Indices.push_back(
+                            static_cast<int>(CI->getZExtValue()));
+                      else
+                        break;
+                    }
+                    StructFieldStores[Key].push_back(
+                        {Tracked, const_cast<Function *>(Context)});
+                  }
+                }
+              }
             }
           }
           continue;
@@ -1582,24 +1711,47 @@ void analyzeSources(AnalysisState &State) {
         if (auto *CB = dyn_cast<CallBase>(UserI)) {
           Function *Callee =
               resolveDirectCallee(CB->getCalledFunction(), State);
+          bool IsIndirect = CB->isIndirectCall() && !Callee;
+
           for (unsigned ArgNo = 0; ArgNo < CB->arg_size(); ++ArgNo) {
             if (!sameTrackedValue(CB->getArgOperand(ArgNo), Tracked))
               continue;
             if (isValueNonnullAtInstruction(Tracked, CB, DT))
               continue;
-            if (Callee && isFreeLikeFunction(Callee->getName()))
-              continue;
-            if (!Callee || Callee->isDeclaration() || ArgNo >= Callee->arg_size())
-              continue;
             if (Item.Depth >= MaxCallDepth)
               continue;
 
-            auto ArgIt = Callee->arg_begin();
-            std::advance(ArgIt, ArgNo);
-            SmallVector<std::string, 8> NextChain = Item.CallChain;
-            appendCallStep(NextChain, Context, Callee, CB);
-            Queue.push_back(
-                WorkItem{&*ArgIt, Callee, false, Item.Depth + 1, NextChain});
+            if (Callee && !Callee->isDeclaration() &&
+                ArgNo < Callee->arg_size()) {
+              if (isFreeLikeFunction(Callee->getName()))
+                continue;
+              auto ArgIt = Callee->arg_begin();
+              std::advance(ArgIt, ArgNo);
+              SmallVector<std::string, 8> NextChain = Item.CallChain;
+              appendCallStep(NextChain, Context, Callee, CB);
+              Queue.push_back(WorkItem{&*ArgIt, Callee, false,
+                                       Item.Depth + 1, NextChain});
+            } else if (IsIndirect) {
+              // Propagate into each resolved indirect call target.
+              auto It = State.IndirectCallees.find(CB);
+              if (It == State.IndirectCallees.end())
+                continue;
+              for (Function *Target : It->second) {
+                if (Target->isDeclaration())
+                  continue;
+                if (ArgNo >= Target->arg_size())
+                  continue;
+                if (isFreeLikeFunction(Target->getName()))
+                  continue;
+                auto ArgIt = Target->arg_begin();
+                std::advance(ArgIt, ArgNo);
+                SmallVector<std::string, 8> NextChain =
+                    Item.CallChain;
+                appendCallStep(NextChain, Context, Target, CB);
+                Queue.push_back(WorkItem{&*ArgIt, Target, false,
+                                         Item.Depth + 1, NextChain});
+              }
+            }
           }
           continue;
         }
