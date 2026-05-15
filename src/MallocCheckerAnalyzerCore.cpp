@@ -224,7 +224,9 @@ static const Value *stripTrackedValue(const Value *V) {
     }
     if (auto *I = dyn_cast<Instruction>(V)) {
       if (isa<BitCastInst>(I) || isa<AddrSpaceCastInst>(I) ||
-          isa<FreezeInst>(I) || isa<GetElementPtrInst>(I)) {
+          isa<FreezeInst>(I) || isa<GetElementPtrInst>(I) ||
+          isa<TruncInst>(I) || isa<ZExtInst>(I) || isa<SExtInst>(I) ||
+          isa<PtrToIntInst>(I) || isa<IntToPtrInst>(I)) {
         V = I->getOperand(0);
         continue;
       }
@@ -518,6 +520,118 @@ static bool matchNonnullCondition(const Value *Cond, const Value *Target,
       if ((LMatch && !LTrueMeansNonnull) || (RMatch && !RTrueMeansNonnull)) {
         TrueMeansNonnull = false;
         return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+static bool matchErrorCondition(const Value *Cond, const Value *Target,
+                                bool &TrueMeansError) {
+  if (!Cond || !Target)
+    return false;
+  Cond = Cond->stripPointerCasts();
+  auto *Cmp = dyn_cast<ICmpInst>(Cond);
+  if (!Cmp)
+    return false;
+
+  const Value *L = stripIntegerCastValue(Cmp->getOperand(0));
+  const Value *R = stripIntegerCastValue(Cmp->getOperand(1));
+
+  bool TargetIsL = sameTrackedValue(L, Target);
+  bool TargetIsR = sameTrackedValue(R, Target);
+  if (!TargetIsL && !TargetIsR)
+    return false;
+
+  auto IsZero = [](const Value *V) {
+    const ConstantInt *CI = dyn_cast<ConstantInt>(V->stripPointerCasts());
+    return CI && CI->isZero();
+  };
+
+  // Target compared with 0: ret < 0, ret == 0, ret != 0, etc.
+  if (TargetIsL && IsZero(Cmp->getOperand(1))) {
+    switch (Cmp->getPredicate()) {
+    case CmpInst::ICMP_EQ:  TrueMeansError = false; return true; // ret == 0 → success
+    case CmpInst::ICMP_NE:  TrueMeansError = true;  return true; // ret != 0 → error
+    case CmpInst::ICMP_SLT: TrueMeansError = true;  return true; // ret < 0  → error
+    case CmpInst::ICMP_SLE: TrueMeansError = true;  return true; // ret <= 0 → error
+    case CmpInst::ICMP_SGT: TrueMeansError = false; return true; // ret > 0  → success
+    case CmpInst::ICMP_SGE: TrueMeansError = false; return true; // ret >= 0 → success
+    default: return false;
+    }
+  }
+
+  // 0 compared with Target: 0 < ret, 0 == ret, etc.
+  if (TargetIsR && IsZero(Cmp->getOperand(0))) {
+    switch (Cmp->getPredicate()) {
+    case CmpInst::ICMP_EQ:  TrueMeansError = false; return true; // 0 == ret → success
+    case CmpInst::ICMP_NE:  TrueMeansError = true;  return true; // 0 != ret → error
+    case CmpInst::ICMP_SGT: TrueMeansError = true;  return true; // 0 > ret  → ret < 0 → error
+    case CmpInst::ICMP_SGE: TrueMeansError = true;  return true; // 0 >= ret → ret <= 0 → error
+    case CmpInst::ICMP_SLT: TrueMeansError = false; return true; // 0 < ret  → ret > 0 → success
+    case CmpInst::ICMP_SLE: TrueMeansError = false; return true; // 0 <= ret → ret >= 0 → success
+    default: return false;
+    }
+  }
+
+  return false;
+}
+
+static bool hasErrorCheckInValueFlow(
+    const Value *Root,
+    const std::unordered_map<Function *, SmallVector<CallBase *, 16>> *Callers) {
+  SmallVector<const Value *, 32> Worklist;
+  SmallPtrSet<const Value *, 32> Seen;
+  Worklist.push_back(Root);
+
+  while (!Worklist.empty()) {
+    const Value *V = stripIntegerCastValue(Worklist.pop_back_val());
+    if (!Seen.insert(V).second)
+      continue;
+
+    for (const User *U : V->users()) {
+      if (auto *Cmp = dyn_cast<ICmpInst>(U)) {
+        bool TrueMeansError = false;
+        if (matchErrorCondition(Cmp, V, TrueMeansError))
+          return true;
+        continue;
+      }
+
+      if (isa<BitCastInst>(U) || isa<AddrSpaceCastInst>(U) ||
+          isa<ZExtInst>(U) || isa<SExtInst>(U) || isa<TruncInst>(U) ||
+          isa<PtrToIntInst>(U) || isa<IntToPtrInst>(U) ||
+          isa<PHINode>(U) || isa<SelectInst>(U) || isa<FreezeInst>(U)) {
+        Worklist.push_back(cast<Value>(U));
+        continue;
+      }
+
+      if (auto *SI = dyn_cast<StoreInst>(U)) {
+        if (SI->getValueOperand() != V)
+          continue;
+        const Value *Ptr = SI->getPointerOperand()->stripPointerCasts();
+        if (const AllocaInst *Slot = asTrackedStackSlot(Ptr))
+          Worklist.push_back(Slot);
+        continue;
+      }
+
+      if (auto *LI = dyn_cast<LoadInst>(U)) {
+        if (LI->getPointerOperand()->stripPointerCasts() ==
+            V->stripPointerCasts()) {
+          Worklist.push_back(LI);
+        }
+        continue;
+      }
+
+      if (auto *RI = dyn_cast<ReturnInst>(U)) {
+        if (!Callers)
+          continue;
+        const Function *F = RI->getFunction();
+        auto It = Callers->find(const_cast<Function *>(F));
+        if (It == Callers->end())
+          continue;
+        for (CallBase *CallerCB : It->second)
+          Worklist.push_back(CallerCB);
       }
     }
   }
@@ -1331,6 +1445,63 @@ static bool valueMayBeNullFromReturns(
   return false;
 }
 
+static bool valueMayReturnError(
+    const Value *V, AnalysisState &State,
+    SmallPtrSetImpl<const Value *> &Visited) {
+  V = stripIntegerCastValue(V);
+  if (!Visited.insert(V).second)
+    return false;
+
+  if (isErrThresholdConstant(V))
+    return true;
+
+  if (const auto *CB = dyn_cast<CallBase>(V)) {
+    Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
+    if (Callee) {
+      if (State.MayReturnErrorFunctions.count(Callee))
+        return true;
+    }
+    if (CB->isIndirectCall()) {
+      auto It = State.IndirectCallees.find(CB);
+      if (It != State.IndirectCallees.end()) {
+        for (Function *Target : It->second) {
+          if (State.MayReturnErrorFunctions.count(Target))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  if (const auto *PN = dyn_cast<PHINode>(V)) {
+    for (const Value *Incoming : PN->incoming_values()) {
+      if (valueMayReturnError(Incoming, State, Visited))
+        return true;
+    }
+    return false;
+  }
+
+  if (const auto *SI = dyn_cast<SelectInst>(V))
+    return valueMayReturnError(SI->getTrueValue(), State, Visited) ||
+           valueMayReturnError(SI->getFalseValue(), State, Visited);
+
+  if (const auto *LI = dyn_cast<LoadInst>(V)) {
+    const Value *Ptr = LI->getPointerOperand()->stripPointerCasts();
+    if (const auto *AI = dyn_cast<AllocaInst>(Ptr)) {
+      for (const User *U : AI->users()) {
+        const auto *Store = dyn_cast<StoreInst>(U);
+        if (!Store || Store->getPointerOperand()->stripPointerCasts() != AI)
+          continue;
+        if (valueMayReturnError(Store->getValueOperand(), State, Visited))
+          return true;
+      }
+      return false;
+    }
+  }
+
+  return false;
+}
+
 bool loadModules(const std::vector<std::string> &Paths, AnalysisState &State,
                  std::string &Error) {
   SMDiagnostic Err;
@@ -1481,6 +1652,47 @@ void computeMayReturnNullFunctions(AnalysisState &State) {
   }
 }
 
+void computeMayReturnErrorFunctions(AnalysisState &State) {
+  bool Changed = true;
+  while (Changed) {
+    Changed = false;
+    for (const auto &ModulePtr : State.Modules) {
+      for (Function &F : *ModulePtr) {
+        if (shouldSkipFunction(F) || !F.getReturnType()->isIntegerTy())
+          continue;
+        if (State.MayReturnErrorFunctions.count(&F))
+          continue;
+
+        bool MayReturnErr = false;
+        for (Instruction &I : instructions(F)) {
+          auto *RI = dyn_cast<ReturnInst>(&I);
+          if (!RI)
+            continue;
+          const Value *RetVal = RI->getReturnValue();
+          if (!RetVal)
+            continue;
+
+          if (isErrThresholdConstant(RetVal)) {
+            MayReturnErr = true;
+            break;
+          }
+
+          SmallPtrSet<const Value *, 32> Visited;
+          if (valueMayReturnError(RetVal, State, Visited)) {
+            MayReturnErr = true;
+            break;
+          }
+        }
+
+        if (!MayReturnErr)
+          continue;
+        State.MayReturnErrorFunctions.insert(&F);
+        Changed = true;
+      }
+    }
+  }
+}
+
 void collectSources(AnalysisState &State) {
   for (const auto &ModulePtr : State.Modules) {
     for (Function &F : *ModulePtr) {
@@ -1541,6 +1753,36 @@ void collectSources(AnalysisState &State) {
         Src.SourceSite = &I;
         Src.SourceFunction = &F;
         Src.SourceKind = Kind;
+        State.Sources.push_back(std::move(Src));
+      }
+    }
+  }
+
+  // --- collect error-returning call sites (integer return type) ---
+  for (const auto &ModulePtr : State.Modules) {
+    for (Function &F : *ModulePtr) {
+      if (shouldSkipFunction(F))
+        continue;
+      if (isIgnoredPath(getModulePath(&F, State)))
+        continue;
+      if (isAllocatorImplementationFunction(F.getName()))
+        continue;
+      for (Instruction &I : instructions(F)) {
+        auto *CB = dyn_cast<CallBase>(&I);
+        if (!CB || !CB->getType()->isIntegerTy())
+          continue;
+
+        Function *Callee = resolveDirectCallee(CB->getCalledFunction(), State);
+        if (!Callee || !State.MayReturnErrorFunctions.count(Callee))
+          continue;
+
+        if (hasErrorCheckInValueFlow(CB, &State.Callers))
+          continue;
+
+        Source Src;
+        Src.SourceSite = &I;
+        Src.SourceFunction = &F;
+        Src.SourceKind = "err:" + Callee->getName().str();
         State.Sources.push_back(std::move(Src));
       }
     }
@@ -1622,7 +1864,10 @@ void analyzeSources(AnalysisState &State) {
 
         if (isa<BitCastInst>(UserI) || isa<AddrSpaceCastInst>(UserI) ||
             isa<GetElementPtrInst>(UserI) || isa<PHINode>(UserI) ||
-            isa<SelectInst>(UserI) || isa<FreezeInst>(UserI)) {
+            isa<SelectInst>(UserI) || isa<FreezeInst>(UserI) ||
+            isa<TruncInst>(UserI) || isa<ZExtInst>(UserI) ||
+            isa<SExtInst>(UserI) || isa<PtrToIntInst>(UserI) ||
+            isa<IntToPtrInst>(UserI)) {
           Queue.push_back(WorkItem{UserI, Context, false, Item.Depth,
                                    Item.CallChain});
 

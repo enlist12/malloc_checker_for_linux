@@ -19,36 +19,42 @@ int main(int argc, char **argv) {
 
   mallocchecker::AnalysisState State;
 
-  mallocchecker::logPhase("phase 1/8 loading modules");
+  mallocchecker::logPhase("phase 1/9 loading modules");
   if (!mallocchecker::loadModules(Paths, State, Error)) {
     errs() << Error << "\n";
     return 1;
   }
 
-  mallocchecker::logPhase("phase 2/8 building MLTA indirect-call data");
+  mallocchecker::logPhase("phase 2/9 building MLTA indirect-call data");
   mallocchecker::buildMLTAData(State);
 
-  mallocchecker::logPhase("phase 3/8 building call index");
+  mallocchecker::logPhase("phase 3/9 building call index");
   mallocchecker::buildCallers(State);
 
-  mallocchecker::logPhase("phase 4/8 collecting panic slab caches");
+  mallocchecker::logPhase("phase 4/9 collecting panic slab caches");
   mallocchecker::collectPanicSlabCaches(State);
   mallocchecker::logPhase("found " +
                           std::to_string(State.PanicSlabCaches.size()) +
                           " panic slab caches");
 
-  mallocchecker::logPhase("phase 5/8 computing may-return-null functions");
+  mallocchecker::logPhase("phase 5/9 computing may-return-null functions");
   mallocchecker::computeMayReturnNullFunctions(State);
   mallocchecker::logPhase(
       "found " + std::to_string(State.MayReturnNullFunctions.size()) +
       " may-return-null functions");
 
-  mallocchecker::logPhase("phase 6/8 collecting nullable-return sources");
+  mallocchecker::logPhase("phase 6/9 computing may-return-error functions");
+  mallocchecker::computeMayReturnErrorFunctions(State);
+  mallocchecker::logPhase(
+      "found " + std::to_string(State.MayReturnErrorFunctions.size()) +
+      " may-return-error functions");
+
+  mallocchecker::logPhase("phase 7/9 collecting nullable-return sources");
   mallocchecker::collectSources(State);
   mallocchecker::logPhase("found " + std::to_string(State.Sources.size()) +
                           " nullable-return sources");
 
-  mallocchecker::logPhase("phase 7/8 tracking unchecked dereferences");
+  mallocchecker::logPhase("phase 8/9 tracking unchecked dereferences");
   mallocchecker::analyzeSources(State);
 
   std::unique_ptr<raw_ostream> OS = mallocchecker::createOutputStream(Error);

@@ -56,6 +56,7 @@ struct AnalysisState {
       Callers;
   std::unordered_set<const llvm::Value *> PanicSlabCaches;
   std::unordered_set<llvm::Function *> MayReturnNullFunctions;
+  std::unordered_set<llvm::Function *> MayReturnErrorFunctions;
   std::vector<Source> Sources;
   std::vector<Report> Reports;
 
@@ -101,6 +102,7 @@ void buildMLTAData(AnalysisState &State);
 void buildCallers(AnalysisState &State);
 void collectPanicSlabCaches(AnalysisState &State);
 void computeMayReturnNullFunctions(AnalysisState &State);
+void computeMayReturnErrorFunctions(AnalysisState &State);
 void collectSources(AnalysisState &State);
 void analyzeSources(AnalysisState &State);
 void writeReports(const AnalysisState &State, llvm::raw_ostream &OS);
