@@ -1,5 +1,10 @@
 #include "IndirectCallResolver.h"
 
+// MLTA type analysis requires getPointerElementType() on typed pointers.
+// All call sites are guarded by HasOpaquePointers checks.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -958,3 +963,5 @@ void buildMLTAData(AnalysisState &State) {
 }
 
 } // namespace mallocchecker
+
+#pragma GCC diagnostic pop
