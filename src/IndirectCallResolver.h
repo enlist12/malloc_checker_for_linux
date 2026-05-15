@@ -75,7 +75,8 @@ void loadElementsStructNameMap(AnalysisState &State);
 llvm::Type *getBaseType(llvm::Value *V, std::set<llvm::Value *> &Visited,
                         AnalysisState &State);
 bool nextLayerBaseType(llvm::Value *V, std::list<TypeIntPair> &TyList,
-                       llvm::Value *&NextV, AnalysisState &State);
+                       llvm::Value *&NextV, std::set<llvm::Value *> &Visited,
+                       AnalysisState &State);
 bool getBaseTypeChain(std::list<TypeIntPair> &Chain, llvm::Value *V,
                       bool &Complete, AnalysisState &State);
 bool getGEPLayerTypes(llvm::GEPOperator *GEP,

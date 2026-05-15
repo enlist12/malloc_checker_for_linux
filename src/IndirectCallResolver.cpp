@@ -330,11 +330,18 @@ bool getGEPLayerTypes(GEPOperator *GEP, std::list<TypeIntPair> &TyList,
 }
 
 bool nextLayerBaseType(Value *V, std::list<TypeIntPair> &TyList,
-                       Value *&NextV, AnalysisState &State) {
+                       Value *&NextV, std::set<Value *> &Visited,
+                       AnalysisState &State) {
   if (!V || isa<Argument>(V)) {
     NextV = V;
     return false;
   }
+
+  if (Visited.find(V) != Visited.end()) {
+    NextV = V;
+    return false;
+  }
+  Visited.insert(V);
 
   if (auto *GEP = dyn_cast<GEPOperator>(V)) {
     NextV = GEP->getPointerOperand();
@@ -345,33 +352,37 @@ bool nextLayerBaseType(Value *V, std::list<TypeIntPair> &TyList,
   }
   if (auto *LI = dyn_cast<LoadInst>(V)) {
     NextV = LI->getPointerOperand();
-    return nextLayerBaseType(LI->getOperand(0), TyList, NextV, State);
+    return nextLayerBaseType(LI->getOperand(0), TyList, NextV, Visited, State);
   }
   if (auto *BCO = dyn_cast<BitCastOperator>(V)) {
     NextV = BCO->getOperand(0);
-    return nextLayerBaseType(BCO->getOperand(0), TyList, NextV, State);
+    return nextLayerBaseType(BCO->getOperand(0), TyList, NextV, Visited, State);
   }
-  // PHI and Select
   if (auto *PN = dyn_cast<PHINode>(V)) {
     bool Ret = false;
+    std::set<Value *> NVisited;
+    std::list<TypeIntPair> NTyList;
     for (unsigned I = 0, E = PN->getNumIncomingValues(); I != E; ++I) {
       Value *IV = PN->getIncomingValue(I);
       NextV = IV;
-      std::list<TypeIntPair> NTyList;
-      Ret = nextLayerBaseType(IV, NTyList, NextV, State);
+      NVisited = Visited;
+      NTyList = TyList;
+      Ret = nextLayerBaseType(IV, NTyList, NextV, NVisited, State);
       if (NTyList.size() > TyList.size())
-        TyList = NTyList;
+        break;
     }
+    TyList = NTyList;
+    Visited = NVisited;
     return Ret;
   }
   if (auto *SelI = dyn_cast<SelectInst>(V)) {
     NextV = SelI->getTrueValue();
-    return nextLayerBaseType(SelI->getTrueValue(), TyList, NextV, State);
+    return nextLayerBaseType(SelI->getTrueValue(), TyList, NextV, Visited,
+                             State);
   }
-  // UnaryOperator
   if (auto *UO = dyn_cast<UnaryOperator>(V)) {
     NextV = UO->getOperand(0);
-    return nextLayerBaseType(UO->getOperand(0), TyList, NextV, State);
+    return nextLayerBaseType(UO->getOperand(0), TyList, NextV, Visited, State);
   }
 
   NextV = nullptr;
@@ -390,7 +401,7 @@ bool getBaseTypeChain(std::list<TypeIntPair> &Chain, Value *V, bool &Complete,
     Chain.push_back(typeidx_c(BTy, 0));
   Visited.clear();
 
-  while (nextLayerBaseType(CV, TyList, NextV, State))
+  while (nextLayerBaseType(CV, TyList, NextV, Visited, State))
     CV = NextV;
 
   for (auto &TI : TyList)
@@ -644,7 +655,8 @@ bool typePropInFunction(Function *F, AnalysisState &State) {
       std::list<TypeIntPair> TyList;
       Value *NextV = nullptr;
       std::set<Value *> Visited;
-      nextLayerBaseType(VO, TyList, NextV, State);
+      std::set<Value *> NLVisited;
+      nextLayerBaseType(VO, TyList, NextV, NLVisited, State);
       if (!TyList.empty()) {
         for (auto &TI : TyList)
           propagateType(PO, TI.first, TI.second, State);
@@ -774,8 +786,12 @@ bool findCalleesWithMLTA(CallInst *CI, FuncSet &FS, AnalysisState &State) {
   if (FS.empty())
     return false;
 
+  // Cache matched functions per (type_hash, idx) to avoid repeated lookups.
+  static thread_local DenseMap<size_t, FuncSet> MatchedFuncsMap;
+
   FuncSet FS1, FS2;
   Type *PrevLayerTy = dyn_cast<CallBase>(CI)->getFunctionType();
+  int PrevIdx = -1;
   Value *CV = CI->getCalledOperand();
   Value *NextV = nullptr;
   int LayerNo = 1;
@@ -790,9 +806,10 @@ bool findCalleesWithMLTA(CallInst *CI, FuncSet &FS, AnalysisState &State) {
 
     std::set<Value *> Visited;
     std::list<TypeIntPair> TyList;
-    nextLayerBaseType(CV, TyList, NextV, State);
-    if (TyList.empty())
+    nextLayerBaseType(CV, TyList, NextV, Visited, State);
+    if (TyList.empty()) {
       break;
+    }
 
     for (auto &TI : TyList) {
       if (LayerNo >= static_cast<int>(MAX_TYPE_LAYER))
@@ -802,34 +819,44 @@ bool findCalleesWithMLTA(CallInst *CI, FuncSet &FS, AnalysisState &State) {
       size_t TyIdxHash = typeIdxHash(TI.first, TI.second, State);
       size_t TyIdxHash_1 = typeIdxHash(TI.first, -1, State);
 
-      // Check escape set
+      // Check escape set (sound mode: escape means type info is too
+      // imprecise, stop narrowing).
       if (State.TypeEscapeSet.count(TyIdxHash) ||
           State.TypeEscapeSet.count(TyIdxHash_1))
         break;
 
-      getTargetsWithLayerType(typeHash(TI.first, State), TI.second, FS1,
-                              State);
+      // Cache lookup for performance.
+      auto CacheIt = MatchedFuncsMap.find(TyIdxHash);
+      if (CacheIt != MatchedFuncsMap.end()) {
+        FS1 = CacheIt->second;
+      } else {
+        getTargetsWithLayerType(typeHash(TI.first, State), TI.second, FS1,
+                                State);
 
-      // Collect from dependent propagated types
-      std::set<HashIntPair> PropSet;
-      getDependentTypes(TI.first, TI.second, PropSet, State);
-      for (auto &Prop : PropSet) {
-        getTargetsWithLayerType(Prop.first, Prop.second, FS2, State);
-        FS1.insert(FS2.begin(), FS2.end());
+        // Collect from dependent propagated types.
+        std::set<HashIntPair> PropSet;
+        getDependentTypes(TI.first, TI.second, PropSet, State);
+        for (auto &Prop : PropSet) {
+          getTargetsWithLayerType(Prop.first, Prop.second, FS2, State);
+          FS1.insert(FS2.begin(), FS2.end());
+        }
+        MatchedFuncsMap[TyIdxHash] = FS1;
       }
 
-      // Intersect to narrow candidates
+      // Intersect: each layer narrows the candidate set.
       intersectFuncSets(FS1, FS, FS2);
       FS = FS2;
 
       CV = NextV;
 
+      // Sound mode: type cap means cannot see further layers.
       if (State.TypeCapSet.count(typeHash(TI.first, State))) {
         ContinueNextLayer = false;
         break;
       }
 
       PrevLayerTy = TI.first;
+      PrevIdx = TI.second;
     }
     TyList.clear();
   }
