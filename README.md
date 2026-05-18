@@ -1,12 +1,17 @@
 # null-ptr-checker
 
-基于 LLVM IR 的 Linux 内核空指针未检查解引用检测器，不仅限于内存分配函数，而是面向**所有可能返回 NULL 的函数**。
+基于 LLVM IR 的 Linux 内核空指针未检查解引用检测器，不仅限于内存分配函数，而是面向**所有可能返回 NULL 的函数**。同时支持**错误返回值未检查检测**（函数返回负整数 errno 但调用者未检查直接使用）。
 
 目标是发现这类问题：
 
 ```c
+// 空指针未检查
 p = some_func_that_may_return_null(...);
 p->field = 1;  // 如果 p 为 NULL，解引用导致空指针访问
+
+// 错误返回值未检查
+ret = some_func_that_may_return_error(...);
+arr[ret] = val;  // 如果 ret 为负值（如 -ENOMEM），数组索引越界
 ```
 
 ## 整体方法论
@@ -18,21 +23,23 @@ Linux 内核 .bc/.ll
        │
        ▼
 ┌─────────────────────────┐
-│   null-ptr-checker      │  第一轮：LLVM 静态分析
-│   全量扫描，生成原始报告 │  输出约 2500 条候选发现
+│   null-ptr-checker      │  第一轮：LLVM 静态分析（9 阶段流水线）
+│   全量扫描，生成原始报告 │  输出约 3000 条候选发现
+│   (含 NULL + error 两类) │
 └───────────┬─────────────┘
             │
             ▼
 ┌─────────────────────────┐
 │  DeepSeek V4 Pro 审核    │  第二轮：AI 辅助逐条验证
 │  结合源码、调用上下文、   │  约 370 条标记为候选真实漏洞
-│  函数语义进行初筛        │
+│  函数语义进行初筛        │  (NULL 检测约 370 条)
+│                          │  (error 检测单独验证)
 └───────────┬─────────────┘
             │
             ▼
 ┌─────────────────────────┐
 │  DeepSeek V4 Pro 复核    │  第三轮：独立交叉验证
-│  重新分析每条候选漏洞的   │  最终确认 3 个真实漏洞
+│  重新分析每条候选漏洞的   │  最终确认 3 个 NULL 相关真实漏洞
 │  触发条件和可达性        │  (confirmed.txt)
 └───────────┬─────────────┘
             │
@@ -50,13 +57,26 @@ Linux 内核 .bc/.ll
 
 基于 Linux 7.0.2 内核全量扫描，经三轮 DeepSeek V4 Pro 验证后的最终结论：
 
+### NULL 检测
+
 | 漏洞 | 数量 | 触发场景 |
 |------|------|---------|
 | snd_ctl_new1 | 27 | 极端 OOM + 驱动探测时分配失败返回 NULL，直接传入 `snd_hda_ctl_add()` 解引用 |
 | skb_pull_data (btintel) | 1 | `btintel_print_fseq_info()` 长度检查与实际消耗量不匹配，截断蓝牙固件响应可触发 |
 | hsr_port_get_hsr | 1 | 端口移除后 prune timer 触发前的窄竞态窗口，netlink 查询可命中 NULL |
 
-**总计：约 2500 条静态分析发现 → 约 370 条候选 → 3 个确认真实漏洞（共 29 个发现点）。**
+**总计：约 2500 条 NULL 静态分析发现 → 约 370 条候选 → 3 个确认真实漏洞（共 29 个发现点）。**
+
+### Error 检测
+
+新增 error miss check 检测后，额外产生约 **475 条** `err:*` 来源的候选报告。经单独验证，**确认真实漏洞 0 条**，全部为误报。主要误报原因：
+- 函数调用形式的检查无法穿透（如 `dma_mapping_error()`）
+- 结构体字段检查无法追踪（如 `FD_PREPARE` 模式）
+- -1 / 哨兵值比较无法识别（`matchErrorCondition` 仅处理与 0 的比较）
+- 非错误的负数语义（如 `lower_bound` 的 -1 表示"未找到"）
+- UBSAN 插桩路径中的虚假 sink
+
+详细 error 检测验证报告见 `results/verification_report.md`。
 
 其他所有候选（cifs_sb_tlink、xfs_group_get、dm_shift_arg、bio_alloc_bioset、txLock、sock_from_file、bond_opt_get_val、btf_type_skip_modifiers、intel_atomic_*、__genradix_ptr 等）经深入分析均为误报。
 
@@ -69,17 +89,21 @@ Linux 内核 .bc/.ll
 ├── build.sh
 ├── Makefile
 ├── README.md
+├── bc.list
 ├── src/
 │   ├── MallocCheckerAnalyzer.h            # 共享数据结构和函数声明
-│   ├── MallocCheckerAnalyzerCore.cpp      # 核心分析引擎（~1660 行）
-│   ├── MallocCheckerAnalyzerMain.cpp      # 程序入口（6 阶段流水线）
-│   └── MallocCheckerAnalyzerOptions.cpp   # CLI 参数解析与 I/O
+│   ├── MallocCheckerAnalyzerCore.cpp      # 核心分析引擎（~2060 行）
+│   ├── MallocCheckerAnalyzerMain.cpp      # 程序入口（9 阶段流水线）
+│   ├── MallocCheckerAnalyzerOptions.cpp   # CLI 参数解析与 I/O
+│   ├── IndirectCallResolver.h             # MLTA 间接调用解析、结构体字段追踪类型
+│   └── IndirectCallResolver.cpp           # MLTA 间接调用解析实现（~800 行）
 ├── tests/
 │   ├── smoke.c                            # 冒烟测试（直接分配、受保护、包装函数等模式）
 │   ├── nofail_smoke.c                     # __GFP_NOFAIL 测试
 │   └── *.bc                              # 预编译的 bitcode
 ├── results/
-│   ├── result.txt                         # 全量原始扫描结果（~685KB+）
+│   ├── result.txt                         # 全量原始扫描结果
+│   ├── verification_report.md             # Error 检测验证报告
 │   └── sure/
 │       ├── confirmed.txt                  # 初始候选列表（第二轮标记为真实，第三轮最终修正）
 │       ├── false_positives.txt            # 确认误报
@@ -121,16 +145,26 @@ Linux 内核 .bc/.ll
 
 这使得分析器可以检测类似 `snd_ctl_new1()` 这类非直接 allocator 的 NULL 返回使用。
 
-## 分析流程（6 阶段流水线）
+### 3. 跨函数 may-return-error 分析
+
+通过不动点分析自动推导哪些函数的整数返回值可能为负（errno）：
+- 函数内部 `return -Exxx`（负常量）→ 标记为 may-return-error
+- 函数调用其他 may-return-error 函数 → 传播标记
+- 通过 `phi` / `select` / `load` 传播 error 值流
+
+## 分析流程（9 阶段流水线）
 
 分析器是一个独立可执行程序，不是 `opt` pass。输入为 `.bc` / `.ll` 文件。
 
-1. **Phase 1: 加载模块** — 解析 LLVM IR / bitcode 文件，构建函数查找表
-2. **Phase 2: 构建调用图** — 建立反向调用关系（每个函数被哪些调用点调用）
-3. **Phase 3: 收集 PANIC slab cache** — 识别 `kmem_cache_create` 时带 `PANIC` 标志的永不失败 slab
-4. **Phase 4: 计算 may-return-null 函数集** — 跨函数不动点分析，判断哪些函数的指针返回值可能为 NULL
-5. **Phase 5: 收集 source** — 从所有白名单分配函数 + may-return-null 函数的调用点中，经所有过滤策略后识别出候选分配源
-6. **Phase 6: 分析 source → sink** — 从每个 source 出发做前向保守值流传播，找到所有未受保护的使用点（sink），去重排序后输出报告
+1. **Phase 1: 加载模块** — 解析 LLVM IR / bitcode 文件，构建函数查找表；检测 opaque pointer
+2. **Phase 2: 构建 MLTA 间接调用数据** — 多层类型分析（MLTA），为间接调用解析可能的目标函数集
+3. **Phase 3: 构建调用图** — 建立反向调用关系（每个函数被哪些调用点调用），包括间接调用
+4. **Phase 4: 收集 PANIC slab cache** — 识别 `kmem_cache_create` 时带 `PANIC` 标志的永不失败 slab
+5. **Phase 5: 计算 may-return-null 函数集** — 跨函数不动点分析，判断哪些函数的指针返回值可能为 NULL
+6. **Phase 6: 计算 may-return-error 函数集** — 跨函数不动点分析，判断哪些函数的整数返回值可能为负（errno）
+7. **Phase 7: 收集 source** — 从白名单分配函数 + may-return-null 函数的调用点（指针类型）以及 may-return-error 函数的调用点（整数类型）中，经所有过滤策略后识别出候选源
+8. **Phase 8: 分析 source → sink** — 从每个 source 出发做前向保守值流传播，找到所有未受保护的使用点（sink），去重排序后输出报告
+9. **Phase 9: 写报告** — 输出结果到文件或 stdout
 
 ### 值流传播方式
 
@@ -140,9 +174,10 @@ Linux 内核 .bc/.ll
 | `bitcast` / `addrspacecast` | 类型转换，值不变 |
 | `gep` | 指针偏移，可能为 NULL 的性质不变 |
 | `phi` / `select` | 控制流合并 |
-| 实参入被调函数 | 追踪到 callee 的对应参数 |
+| 实参入被调函数 | 追踪到 callee 的对应参数（含间接调用目标） |
 | 包装函数返回 | `return` 传播回所有 caller 的调用点 |
 | `alloca` 栈槽位 | 局部栈变量的简单 spill/reload |
+| 结构体字段 store/load | 同函数内 GEP 写入结构体字段后，从同字段 load 时恢复追踪链 |
 
 ### Sink 类型
 
@@ -150,6 +185,59 @@ Linux 内核 .bc/.ll
 - 对被追踪指针本身的 `store`
 - `atomicrmw` / `cmpxchg`
 - 明确内存写入类调用的目标参数：`memcpy` / `memmove` / `memset` / `strcpy` / `strscpy` / `strlcpy`
+
+## MLTA 间接调用解析
+
+针对 Linux 内核大量使用函数指针和 ops 结构体的特点，实现了多层类型分析（MLTA）来解析间接调用：
+
+- 通过类型哈希对函数签名进行分组，构建候选目标函数集
+- 追踪全局变量初始化列表中的类型信息，将函数指针字段与具体实现关联
+- 追踪结构体类型的层间传播（第 0 层 → 第 1 层 → ...，最多 10 层）
+- 对每处 `call %funcptr` 尝试解析可能的目标函数集合
+
+**限制**：MLTA 依赖 LLVM typed pointer 的 `getPointerElementType()` API。对于 opaque-pointer IR（新版本 LLVM/clang 默认），MLTA 会被自动禁用。此外，仅维护一个简单的 `GlobalFuncMap`（按地址排序的全局函数列表）用于间接调用目标查找。
+
+## Error 检测
+
+新增 `err:*` source-kind 检测，针对**函数返回负整数 errno 但调用者未检查直接使用**的模式。
+
+### 检测目标
+
+```c
+ret = some_func_that_returns_negative_errno(...);
+arr[ret] = val;  // ret 可能为 -ENOMEM，用作数组索引导致越界
+```
+
+### Error source 识别
+
+- 函数返回类型为整数类型（`isIntegerTy()`）
+- 函数内部 `return -Exxx`（负的 `ConstantInt`）或调用了其他 may-return-error 函数
+- 不限于特定白名单，通过不动点分析传播
+
+### Error check 匹配
+
+`matchErrorCondition()` 识别以下比较模式：
+
+| 模式 | LLVM IR 形式 | 含义 |
+|------|-------------|------|
+| `ret < 0` | `icmp slt %ret, 0` | 检查是否为负 |
+| `ret <= 0` | `icmp sle %ret, 0` | 检查是否为非正 |
+| `ret == 0` | `icmp eq %ret, 0` | 等于 0 = 成功 |
+| `ret != 0` | `icmp ne %ret, 0` | 不等于 0 = 失败 |
+| `ret >= 0` | `icmp sge %ret, 0` | 非负 = 成功 |
+| `ret > 0` | `icmp sgt %ret, 0` | 正数 = 成功 |
+
+`matchErrPtrNonnullCompare()` 额外匹配 ERR_PTR 相关的阈值比较模式（`IS_ERR()` 展开后的 `icmp uge %val, -4095` 等）。
+
+### Error 检测已知限制
+
+1. **仅匹配与 0 的比较**：`== -1`、`== 0xFFFFFFFF` 等哨兵值无法识别
+2. **函数调用形式的检查无法穿透**：如 `dma_mapping_error()`、`IS_ERR_OR_NULL()` 等
+3. **无法区分语义负值和错误负值**：如 `lower_bound` 的 -1 表示"未找到"而非错误
+4. **bool-returning 函数可能误入**：返回 `i1` 的函数若调用了 may-return-error 函数可能被误标记
+5. **UBSAN 插桩路径中的虚假 sink**：错误值经过 UBSAN 运行时检查时，UBSAN 内部的 load 被误报为 sink
+
+详细验证见 `results/verification_report.md`。
 
 ## 降低误报的保守裁剪（8 项）
 
@@ -168,28 +256,28 @@ Linux 内核 .bc/.ll
 
 当前版本存在以下限制：
 
-### 间接调用未处理
+### 间接调用部分支持
 
-当前只支持**直接调用**（`call @function_name`），不处理间接调用目标（`call %funcptr`）。实际的 Linux 内核中存在大量通过函数指针、虚函数表（ops 结构体）、回调注册等方式进行的间接调用。这意味着：
+已实现 MLTA（多层类型分析）来解析间接调用，但存在以下局限：
 
-- 通过函数指针返回的分配包装函数（如 `allocator->ops->allocate()`）不会被识别为 source
-- 通过间接调用传播到 sink 的路径会被截断
-- 跨模块的函数指针调用完全不可见
+- 仅支持 typed-pointer IR：对于 opaque-pointer IR（新版本 LLVM/clang 默认），MLTA 自动禁用，间接调用完全不追踪
+- 类型分析精度有限：最多 10 层类型传播，最多 50 个间接调用目标
+- 跨模块类型匹配：不同 `.bc` 文件中相同结构体的类型哈希可能不一致，依赖 fuzzy type matching
+- 函数指针存储到全局变量之外的路径（如堆上分配、动态注册）无法追踪
 
-### 结构体嵌套未追踪
+### 结构体字段追踪部分支持
 
-当前只追踪局部 `alloca` 栈槽位的简单 spill/reload，**不追踪结构体字段的 store/load 回读**。这意味着：
+已实现同函数内的结构体字段 store/load 回读追踪，但存在以下局限：
 
-- 当分配结果写入结构体字段后，从该字段重新读取时的传播链会断裂：
-  ```c
-  struct foo *f = kmalloc(...);
-  obj->ptr = f;     // store 到结构体字段 → 追踪断裂
-  ...
-  p = obj->ptr;     // 从结构体字段 load → 追踪不到来源
-  p->field = 1;     // 该 sink 无法被关联到原始 kmalloc
-  ```
-- 堆对象字段、全局对象字段同理
-- 嵌套结构体（`a->b->ptr`）的传播完全不可见
+- **仅限同函数内**：store 和 load 必须在同一个函数中，跨函数的 struct 字段传播不追踪
+- **BasePtr 匹配**：通过 stripPointerCasts 后的 base pointer 匹配，不支持跨别名的 base pointer 匹配
+- **嵌套结构体（`a->b->ptr`）**：多层 GEP 索引的嵌套字段 store/load 已支持（通过 `StructFieldKey::Indices` 链），但 base pointer 必须严格一致
+- **堆对象字段、全局对象字段**：不追踪（`alloca` 之外的内存对象）
+- **跨函数 struct 传播**：若 struct 通过参数传递给 callee，callee 内对字段的访问无法与 caller 的 store 关联
+
+### Error 检测限制
+
+参见上方 [Error 检测已知限制](#error-检测已知限制)。
 
 ### 其他限制
 
@@ -223,7 +311,7 @@ Linux 内核 .bc/.ll
 
 ### 2. 函数过于底层或复杂导致静态分析失败
 
-- **间接调用**：LLVM IR 中通过函数指针的调用（`call %funcptr`）完全不追踪。Linux 内核大量使用 ops 结构体、回调注册，这类路径的系统性漏报不可忽略
+- **间接调用**：已通过 MLTA 部分支持，但 opaque-pointer IR 下完全禁用，typed-pointer IR 下也有类型分析精度和函数指针存储路径的局限
 - **深度内联/优化破坏可追踪性**：编译器优化可能将多级 wrapper 内联合并，使得原本清晰的 `alloc → check → use` 模式在 IR 层面变得模糊
 - **复杂的 PHI/分支结构**：某些函数的 NULL 路径经过多层嵌套分支，静态分析在有限深度内无法推断其返回值可能为 NULL，导致该函数根本不会进入 `MayReturnNullFunctions` 集合
 
@@ -320,9 +408,9 @@ make irdumper
 
 字段含义：
 
-- `source-kind`: 识别到的分配函数类别（或 may-return-null 函数名）
-- `source-func`: 分配发生的函数
-- `source-loc`: 分配点源码位置
+- `source-kind`: 识别到的分配函数类别，或 `may-return-null` 函数名，或 `err:<funcname>`（error 检测源）
+- `source-func`: 分配/调用发生的函数
+- `source-loc`: 分配/调用点源码位置
 - `sink-func`: sink 所在函数
 - `sink-kind`: sink 类型（`load` / `store` / `atomicrmw` / `cmpxchg` / `call-arg-deref`）
 - `sink-loc`: sink 源码位置
@@ -333,9 +421,11 @@ make irdumper
 | 文件 | 说明 |
 |------|------|
 | `MallocCheckerAnalyzer.h` | 共享数据结构声明（`Report`, `Source`, `AnalysisState` 等） |
-| `MallocCheckerAnalyzerMain.cpp` | 程序入口，6 阶段流水线编排 |
+| `MallocCheckerAnalyzerMain.cpp` | 程序入口，9 阶段流水线编排 |
 | `MallocCheckerAnalyzerOptions.cpp` | CLI 参数解析、输入输出设置 |
-| `MallocCheckerAnalyzerCore.cpp` | 核心分析逻辑（白名单、值流传播、sink 检测、条件匹配等） |
+| `MallocCheckerAnalyzerCore.cpp` | 核心分析逻辑（白名单、NULL/error 值流传播、sink 检测、条件匹配等） |
+| `IndirectCallResolver.h` | MLTA 间接调用解析声明及结构体字段追踪类型 |
+| `IndirectCallResolver.cpp` | MLTA 间接调用解析实现（类型哈希、层间传播、目标函数约束等） |
 | `build.sh` | 构建脚本 |
 | `Makefile` | 顶层构建入口 |
 | `tools/IRDumper/` | LLVM pass 插件工具（写 bitcode 到磁盘） |
@@ -344,9 +434,10 @@ make irdumper
 
 如果后续要继续提升检测质量，建议优先做：
 
-1. **间接调用解析**：对函数指针、ops 结构体中的函数指针字段进行类型感知的目标分析，至少覆盖通过 `struct ops->func()` 模式的间接调用
-2. **结构体字段追踪**：受限的结构体字段 store/load 回读传播，至少支持常见模式如 `ctx->ptr = alloc(); ...; use(ctx->ptr)`
+1. **间接调用解析增强**：提升 opaque-pointer IR 下的间接调用解析能力（当前 MLTA 仅在 typed-pointer IR 下工作）；扩大函数指针存储路径的追踪范围（当前仅覆盖全局变量初始化列表）
+2. **跨函数结构体字段追踪**：将 struct 字段传播从同函数扩展到跨函数边界（当前已实现同函数内的 store/load 回读）
 3. **ERR_PTR 语义识别**：识别 `IS_ERR()` / `IS_ERR_OR_NULL()` / `PTR_ERR()` 等模式，不再将 ERR_PTR 返回函数误报为 NULL 未检查
-4. **更精细的 null-check 建模**：避免"出现过 NULL 比较就裁掉 source"的过度保守策略
-5. **跨变量不变式推理**：识别类似 `new_state != NULL ⇒ old_state != NULL` 的配对保证
-6. **Linux 常见错误处理宏语义识别**：`BUG_ON`、`WARN_ON`、`likely/unlikely` 等
+4. **Error check 增强**：扩展 `matchErrorCondition` 支持与 -1 等哨兵值的比较；识别函数调用形式的 error check（如 `dma_mapping_error()`）
+5. **更精细的 null-check 建模**：避免"出现过 NULL 比较就裁掉 source"的过度保守策略
+6. **跨变量不变式推理**：识别类似 `new_state != NULL ⇒ old_state != NULL` 的配对保证
+7. **Linux 常见错误处理宏语义识别**：`BUG_ON`、`WARN_ON`、`likely/unlikely` 等
